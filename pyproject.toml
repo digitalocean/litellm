@@ -188,7 +188,7 @@ ci = [
     "psycopg2-binary==2.9.11",
     "pytest-codspeed==4.3.0",
     "pytest-retry==1.7.0",
-    "pyarrow==22.0.0",
+    "pyarrow==23.0.1",
     "langchain==1.2.10",
     "lunary==1.4.36; python_version == '3.10'",
     "lunary==1.4.37; python_version >= '3.11'",
