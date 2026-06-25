@@ -1380,8 +1380,9 @@ class LiteLLMAnthropicMessagesAdapter:
                     name=choice.delta.tool_calls[0].function.name or "",
                     input={},  # type: ignore[typeddict-item]
                 )
-            elif choice.delta.content is not None and len(choice.delta.content) > 0:
-                return "text", TextBlock(type="text", text="")
+            # Check thinking before text: the delta translator prioritizes reasoning_content
+            # over content when both are present in the same chunk. The block type must
+            # match that priority or we get a text block emitting thinking_delta events.
             elif isinstance(choice, StreamingChoices) and hasattr(
                 choice.delta, "thinking_blocks"
             ):
@@ -1410,6 +1411,8 @@ class LiteLLMAnthropicMessagesAdapter:
                     return "thinking", ChatCompletionThinkingBlock(
                         type="thinking", thinking="", signature=""
                     )
+            elif choice.delta.content is not None and len(choice.delta.content) > 0:
+                return "text", TextBlock(type="text", text="")
 
         return "text", TextBlock(type="text", text="")
 
