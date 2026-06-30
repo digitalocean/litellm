@@ -1403,6 +1403,13 @@ class LiteLLMAnthropicMessagesAdapter:
                         return "thinking", ChatCompletionThinkingBlock(
                             type="thinking", thinking=thinking, signature=signature
                         )
+            elif isinstance(choice, StreamingChoices) and hasattr(
+                choice.delta, "reasoning_content"
+            ):
+                if choice.delta.reasoning_content is not None:
+                    return "thinking", ChatCompletionThinkingBlock(
+                        type="thinking", thinking="", signature=""
+                    )
 
         return "text", TextBlock(type="text", text="")
 
@@ -1424,8 +1431,7 @@ class LiteLLMAnthropicMessagesAdapter:
         for choice in choices:
             if choice.delta.content is not None and len(choice.delta.content) > 0:
                 text += choice.delta.content
-            if choice.delta.tool_calls is not None:
-                partial_json = ""
+            if choice.delta.tool_calls is not None and len(choice.delta.tool_calls) > 0:
                 for tool in choice.delta.tool_calls:
                     if (
                         tool.function is not None
