@@ -288,6 +288,17 @@ DROP_UNSUPPORTED_SPEED_WARNING: Final = (
     "Dropping unsupported `speed` for model=%s (drop_params=True). Fast mode is only supported on select Opus models."
 )
 
+_OUTPUT_FORMAT_UNSUPPORTED_FIELDS = {
+    "maxItems",
+    "minItems",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minLength",
+    "maxLength",
+}
+
 
 class AnthropicConfig(AnthropicModelInfo, BaseConfig):
     """
@@ -526,17 +537,6 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         return params
 
-    _OUTPUT_FORMAT_UNSUPPORTED_FIELDS = {
-        "maxItems",
-        "minItems",
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "minLength",
-        "maxLength",
-    }
-
     @staticmethod
     def filter_anthropic_output_schema(schema: dict[str, Any]) -> dict[str, Any]:
         """
@@ -682,7 +682,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if not isinstance(schema, (dict, list)):
             return False
 
-        unsupported_fields = AnthropicConfig._OUTPUT_FORMAT_UNSUPPORTED_FIELDS
+        unsupported_fields = _OUTPUT_FORMAT_UNSUPPORTED_FIELDS
 
         if isinstance(schema, dict):
             if any(field in schema for field in unsupported_fields):
