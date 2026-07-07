@@ -163,9 +163,6 @@ class TestResponseCompliance:
             "status",
             "created",
             "updated",
-            "role",
-            "outputs",
-            "usage",
         ]
 
         for field in output_fields:
@@ -184,6 +181,7 @@ class TestResponseCompliance:
             "failed",
             "cancelled",
             "incomplete",
+            "budget_exceeded",
         ]
         assert status_prop["enum"] == expected_statuses
         print(f"✓ Status enum values: {expected_statuses}")

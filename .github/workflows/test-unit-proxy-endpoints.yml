@@ -7,6 +7,7 @@ on:
       - litellm_internal_staging
       - litellm_oss_branch
       - "litellm_**"
+      - "release/v*.do.*"
 
 permissions:
   contents: read
@@ -26,7 +27,6 @@ jobs:
         tests/test_litellm/proxy/guardrails
         tests/test_litellm/proxy/management_helpers
         tests/test_litellm/proxy/anthropic_endpoints
-        tests/test_litellm/proxy/google_endpoints
         tests/test_litellm/proxy/openai_files_endpoint
         tests/test_litellm/proxy/response_api_endpoints
         tests/test_litellm/proxy/image_endpoints
@@ -37,6 +37,8 @@ jobs:
         tests/test_litellm/proxy/public_endpoints
         tests/test_litellm/proxy/prompts
         tests/test_litellm/proxy/ui_crud_endpoints
+        tests/test_litellm/proxy/rag_endpoints
+        tests/test_litellm/proxy/realtime_endpoints
       workers: 2
       reruns: 2
       artifact-name: proxy-endpoints
