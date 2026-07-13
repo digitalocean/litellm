@@ -1290,6 +1290,8 @@ class LiteLLMAnthropicMessagesAdapter:
 
         if partial_json is not None:
             return "input_json_delta", ContentJsonBlockDelta(type="input_json_delta", partial_json=partial_json)
+        elif text:
+            return "text_delta", ContentTextBlockDelta(type="text_delta", text=text)
         elif reasoning_content:
             return "thinking_delta", ContentThinkingBlockDelta(type="thinking_delta", thinking=reasoning_content)
         elif reasoning_signature:
