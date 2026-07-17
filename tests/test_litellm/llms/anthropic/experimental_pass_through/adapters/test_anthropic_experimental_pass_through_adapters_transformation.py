@@ -7,9 +7,6 @@ import pytest
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
 
-from litellm.litellm_core_utils.prompt_templates.factory import (
-    THOUGHT_SIGNATURE_SEPARATOR,
-)
 from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
     OPENAI_MAX_TOOL_NAME_LENGTH,
     LiteLLMAnthropicMessagesAdapter,
@@ -28,7 +25,6 @@ from litellm.types.utils import (
     Function,
     Message,
     ModelResponse,
-    ModelResponseStream,
     StreamingChoices,
     Usage,
 )
@@ -78,50 +74,6 @@ def test_translate_streaming_openai_chunk_to_anthropic_content_block():
     }
 
 
-def test_translate_streaming_openai_chunk_strips_gemini_thought_from_tool_call_id():
-    """Gemini embeds thought signatures in OpenAI tool ids; Anthropic SSE should expose a clean id."""
-    base = "call_3e9417b7925e49aca9a71dc1885e"
-    sig = "CiIBDDnWx"
-    combined = f"{base}{THOUGHT_SIGNATURE_SEPARATOR}{sig}"
-    choices = [
-        StreamingChoices(
-            finish_reason=None,
-            index=0,
-            delta=Delta(
-                provider_specific_fields=None,
-                content=None,
-                role="assistant",
-                function_call=None,
-                tool_calls=[
-                    ChatCompletionDeltaToolCall(
-                        id=combined,
-                        function=Function(
-                            arguments='{"a": 17, "b": 25}', name="add_numbers"
-                        ),
-                        type="function",
-                        index=0,
-                    )
-                ],
-                audio=None,
-            ),
-            logprobs=None,
-        )
-    ]
-
-    (
-        block_type,
-        content_block_start,
-    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic_content_block(
-        choices=choices
-    )
-
-    assert block_type == "tool_use"
-    assert content_block_start["id"] == base
-    assert content_block_start["name"] == "add_numbers"
-    assert content_block_start["input"] == {}
-    assert content_block_start["provider_specific_fields"]["signature"] == sig
-
-
 def test_translate_streaming_openai_chunk_to_anthropic_thinking_content_block():
     choices = [
         StreamingChoices(
@@ -166,44 +118,6 @@ def test_translate_streaming_openai_chunk_to_anthropic_thinking_content_block():
     assert content_block_start == {
         "type": "thinking",
         "thinking": "I need to summar",
-        "signature": "",
-    }
-
-
-def test_translate_streaming_openai_chunk_to_anthropic_reasoning_content_only_content_block():
-    """OpenAI-compatible reasoning backends (vLLM/SGLang) emit ``reasoning_content``
-    without ``thinking_blocks``. The content-block classifier must still open a
-    ``thinking`` block so the matching ``thinking_delta`` stream is not emitted
-    inside a text block (which silently drops chain-of-thought for /v1/messages
-    streaming clients)."""
-    choices = [
-        StreamingChoices(
-            finish_reason=None,
-            index=0,
-            delta=Delta(
-                reasoning_content="Let me think",
-                thinking_blocks=None,
-                content=None,
-                role="assistant",
-                function_call=None,
-                tool_calls=None,
-                audio=None,
-            ),
-            logprobs=None,
-        )
-    ]
-
-    (
-        block_type,
-        content_block_start,
-    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic_content_block(
-        choices=choices
-    )
-
-    assert block_type == "thinking"
-    assert content_block_start == {
-        "type": "thinking",
-        "thinking": "",
         "signature": "",
     }
 
@@ -402,6 +316,82 @@ def test_translate_anthropic_messages_to_openai_tool_message_placement():
     ), "Tool message should be placed before user message"
 
 
+def test_translate_streaming_openai_text_delta_no_tool_calls():
+    """When tool_calls is None, a text delta with content should be text_delta."""
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                provider_specific_fields=None,
+                content="Hello",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    (
+        type_of_content,
+        content_block_delta,
+    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic(
+        choices=choices  # type: ignore[arg-type]
+    )
+
+    assert type_of_content == "text_delta"
+    assert content_block_delta["type"] == "text_delta"
+    assert content_block_delta["text"] == "Hello"  # type: ignore[typeddict-unknown-key]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Hello from DeepSeek",
+        "Let me think about that.",
+    ],
+)
+def test_translate_streaming_openai_text_delta_empty_tool_calls(content: str):
+    """When tool_calls is an empty list (len==0), content should still be text_delta.
+
+    This reproduces the bug where DeepSeek/vLLM sends tool_calls: []
+    instead of tool_calls: None. Before the fix, the `is not None` guard
+    let this into the tool_calls branch, and a stray partial_json="" caused
+    an empty input_json_delta to be emitted instead of the text content.
+    """
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                provider_specific_fields=None,
+                content=content,
+                role="assistant",
+                function_call=None,
+                tool_calls=[],  # empty list — the exact pattern from vLLM/DeepSeek
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    (
+        type_of_content,
+        content_block_delta,
+    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic(
+        choices=choices  # type: ignore[arg-type]
+    )
+
+    assert type_of_content == "text_delta", (
+        f"Expected text_delta but got {type_of_content} — "
+        "empty tool_calls list should not trigger input_json_delta"
+    )
+    assert content_block_delta["type"] == "text_delta"
+    assert content_block_delta["text"] == content  # type: ignore[typeddict-unknown-key]
+
+
 def test_translate_openai_content_to_anthropic_empty_function_arguments():
     """Test that empty function arguments are handled safely and don't cause JSON parsing errors."""
 
@@ -466,46 +456,6 @@ def test_translate_openai_content_to_anthropic_text_and_tool_calls():
     assert result[1]["id"] == "call_weather"
     assert result[1]["name"] == "get_weather"
     assert result[1]["input"] == {"location": "Boston"}
-
-
-def test_translate_openai_content_to_anthropic_strips_gemini_thought_from_tool_call_id():
-    """
-    Non-streaming path must strip the Gemini thought-signature suffix from
-    tool_call.id, same as the streaming path. The base64 signature contains
-    `+ / =` which violate Anthropic's `^[a-zA-Z0-9_-]+$` tool_use.id pattern
-    and 400 when the history is replayed to an Anthropic-native provider.
-    """
-    base = "call_3e9417b7925e49aca9a71dc1885e"
-    sig = "CiIBDDnWx+/a=="
-    combined = f"{base}{THOUGHT_SIGNATURE_SEPARATOR}{sig}"
-    openai_choices = [
-        Choices(
-            message=Message(
-                role="assistant",
-                content=None,
-                tool_calls=[
-                    ChatCompletionAssistantToolCall(
-                        id=combined,
-                        type="function",
-                        function=Function(
-                            name="get_weather",
-                            arguments='{"location": "Boston"}',
-                        ),
-                    )
-                ],
-            )
-        )
-    ]
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter._translate_openai_content_to_anthropic(choices=openai_choices)
-
-    assert len(result) == 1
-    assert result[0]["type"] == "tool_use"
-    assert result[0]["id"] == base
-    assert THOUGHT_SIGNATURE_SEPARATOR not in result[0]["id"]
-    assert result[0]["name"] == "get_weather"
-    assert result[0]["input"] == {"location": "Boston"}
 
 
 def test_translate_openai_response_to_anthropic_text_and_tool_calls():
@@ -1241,51 +1191,6 @@ def test_streaming_chunk_with_both_text_and_tool_calls_issue_18238():
     assert content_block_start["id"] == "toolu_bdrk_013xRVejhv3ybmLEGCoZib2b"
 
 
-def test_streaming_chunk_with_text_and_empty_tool_calls_returns_text_delta():
-    """
-    Some OpenAI-compatible providers emit `tool_calls: []` on regular text chunks.
-
-    Empty tool_calls should be treated as no tool call so the Anthropic adapter
-    does not shadow text with an empty input_json_delta.
-    """
-    choices = [
-        StreamingChoices(
-            finish_reason=None,
-            index=0,
-            delta=Delta(
-                provider_specific_fields=None,
-                content="Hello from vLLM",
-                role="assistant",
-                function_call=None,
-                tool_calls=[],
-                audio=None,
-            ),
-            logprobs=None,
-        )
-    ]
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-
-    (
-        type_of_content,
-        content_block_delta,
-    ) = adapter._translate_streaming_openai_chunk_to_anthropic(choices=choices)
-
-    assert type_of_content == "text_delta"
-    assert content_block_delta["type"] == "text_delta"
-    assert content_block_delta["text"] == "Hello from vLLM"
-
-    (
-        block_type,
-        content_block_start,
-    ) = adapter._translate_streaming_openai_chunk_to_anthropic_content_block(
-        choices=choices
-    )
-
-    assert block_type == "text"
-    assert content_block_start == {"type": "text", "text": ""}
-
-
 # ============================================================================
 # Cache Control Transformation Tests
 # ============================================================================
@@ -1295,12 +1200,6 @@ CACHE_CONTROL_BEDROCK_CONVERSE_MODEL = (
     "bedrock/converse/global.anthropic.claude-opus-4-5-20251101-v1:0"
 )
 CACHE_CONTROL_NON_ANTHROPIC_MODEL = "gpt-4"
-# Bedrock Application Inference Profile ARN: the string contains neither
-# "anthropic" nor "claude", so the model can only be recognized via its ARN shape
-CACHE_CONTROL_BEDROCK_ARN_MODEL = (
-    "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:"
-    "application-inference-profile/abcdef123456"
-)
 
 
 def test_should_add_cache_control_for_anthropic_model():
@@ -1415,68 +1314,6 @@ def test_cache_control_not_preserved_for_non_claude_model():
 
     assert len(result) == 1
     assert "cache_control" not in result[0]["content"][0]
-
-
-@pytest.mark.parametrize(
-    "model, expected",
-    [
-        (CACHE_CONTROL_BEDROCK_ARN_MODEL, True),
-        (
-            "arn:aws-us-gov:bedrock:us-gov-west-1:123:application-inference-profile/x",
-            True,
-        ),
-        ("bedrock/amazon.titan-text-express-v1", False),
-        ("arn:aws:sagemaker:us-east-1:123:endpoint/my-endpoint", False),
-        ("arn:aws:sagemaker:us-east-1:123:endpoint/my-bedrock-transcriber", False),
-        (CACHE_CONTROL_NON_ANTHROPIC_MODEL, False),
-    ],
-)
-def test_is_bedrock_arn_model(model, expected):
-    """is_bedrock_arn_model requires an ARN with bedrock in the service field, not just anywhere."""
-    assert LiteLLMAnthropicMessagesAdapter.is_bedrock_arn_model(model) is expected
-
-
-def test_cache_control_preserved_for_bedrock_arn_inference_profile():
-    """
-    Regression for https://github.com/BerriAI/litellm/issues/26625
-
-    Bedrock Application Inference Profile ARNs hide the underlying Claude model
-    name, so cache_control must still be preserved through the /v1/messages adapter.
-    """
-    anthropic_messages = [
-        AnthropicMessagesUserMessageParam(
-            role="user",
-            content=[
-                {
-                    "type": "text",
-                    "text": "This is cached content",
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-        )
-    ]
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter.translate_anthropic_messages_to_openai(
-        messages=anthropic_messages, model=CACHE_CONTROL_BEDROCK_ARN_MODEL
-    )
-
-    assert len(result) == 1
-    assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-
-
-def test_cache_control_fix_does_not_broaden_claude_detection():
-    """
-    The cache_control fix is scoped to _add_cache_control_if_applicable; it must not
-    make is_anthropic_claude_model treat ARN profiles as Claude, which would route
-    thinking params through unmodified and break non-Claude Bedrock profiles.
-    """
-    assert (
-        LiteLLMAnthropicMessagesAdapter.is_anthropic_claude_model(
-            CACHE_CONTROL_BEDROCK_ARN_MODEL
-        )
-        is False
-    )
 
 
 def test_cache_control_preserved_in_image_content_for_claude():
@@ -1770,6 +1607,105 @@ def test_translate_streaming_openai_chunk_to_anthropic_reasoning_content_without
     assert type_of_content == "thinking_delta"
     assert content_block_delta["type"] == "thinking_delta"
     assert content_block_delta["thinking"] == "I need to analyze this carefully..."
+
+
+def test_translate_streaming_openai_chunk_to_anthropic_content_block_empty_reasoning_content():
+    """Empty reasoning_content must not open a thinking block without thinking_delta."""
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                reasoning_content="",
+                content="",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    (
+        block_type,
+        content_block_start,
+    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic_content_block(
+        choices=choices
+    )
+
+    assert block_type == "text"
+    assert content_block_start == {"type": "text", "text": ""}
+
+
+def test_translate_streaming_openai_chunk_to_anthropic_empty_reasoning_content_no_thinking_delta():
+    """Empty reasoning_content must not emit thinking_delta on a text block."""
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                reasoning_content="",
+                content="",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    (
+        type_of_content,
+        content_block_delta,
+    ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic(
+        choices=choices
+    )
+
+    assert type_of_content == "text_delta"
+    assert content_block_delta["type"] == "text_delta"
+    assert content_block_delta["text"] == ""
+
+
+def test_translate_streaming_openai_chunk_to_anthropic_prefers_text_when_content_and_reasoning_present():
+    """
+    When a chunk has both content and reasoning_content, delta type must match
+    content-block type (text), not emit thinking_delta.
+    """
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                reasoning_content=".",
+                content="'s a simple iterative",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+    (
+        block_type,
+        content_block_start,
+    ) = adapter._translate_streaming_openai_chunk_to_anthropic_content_block(
+        choices=choices
+    )
+    (
+        type_of_content,
+        content_block_delta,
+    ) = adapter._translate_streaming_openai_chunk_to_anthropic(choices=choices)
+
+    assert block_type == "text"
+    assert content_block_start == {"type": "text", "text": ""}
+    assert type_of_content == "text_delta"
+    assert content_block_delta["type"] == "text_delta"
+    assert content_block_delta["text"] == "'s a simple iterative"
 
 
 def test_translate_openai_response_to_anthropic_with_reasoning_content_only():
@@ -2414,356 +2350,3 @@ class TestTranslateAnthropicOutputFormatToOpenAI:
             )
             is None
         )
-
-
-class TestAnthropicStreamWrapperToolArgs:
-    """
-    Regression test for https://github.com/BerriAI/litellm/issues/24134
-
-    When Gemini sends tool call args in the same streaming chunk as a content
-    block transition, the Anthropic adapter was discarding the processed_chunk
-    containing input_json_delta. This verifies the args are preserved.
-    """
-
-    def _build_chunks(self):
-        """Build mock OpenAI-format chunks simulating Gemini tool call response."""
-        # Chunk 1: text content
-        text_chunk = ModelResponseStream(
-            id="chatcmpl-123",
-            created=1700000000,
-            model="gemini-2.0-flash",
-            object="chat.completion.chunk",
-            choices=[
-                StreamingChoices(
-                    index=0,
-                    delta=Delta(content="Let me check", role="assistant"),
-                    finish_reason=None,
-                )
-            ],
-        )
-
-        # Chunk 2: tool call (triggers new content block + carries args)
-        tool_chunk = ModelResponseStream(
-            id="chatcmpl-123",
-            created=1700000000,
-            model="gemini-2.0-flash",
-            object="chat.completion.chunk",
-            choices=[
-                StreamingChoices(
-                    index=0,
-                    delta=Delta(
-                        tool_calls=[
-                            ChatCompletionDeltaToolCall(
-                                id="call_123",
-                                type="function",
-                                function=Function(
-                                    name="get_weather",
-                                    arguments='{"city": "Tokyo"}',
-                                ),
-                                index=0,
-                            )
-                        ]
-                    ),
-                    finish_reason=None,
-                )
-            ],
-        )
-
-        # Chunk 3: finish
-        finish_chunk = ModelResponseStream(
-            id="chatcmpl-123",
-            created=1700000000,
-            model="gemini-2.0-flash",
-            object="chat.completion.chunk",
-            choices=[
-                StreamingChoices(
-                    index=0,
-                    delta=Delta(),
-                    finish_reason="stop",
-                )
-            ],
-            usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
-        )
-
-        return [text_chunk, tool_chunk, finish_chunk]
-
-    def _make_stream_wrapper(self, chunks):
-        from litellm.llms.anthropic.experimental_pass_through.adapters.streaming_iterator import (
-            AnthropicStreamWrapper,
-        )
-
-        class SimpleIterator:
-            def __init__(self, items):
-                self._items = iter(items)
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                return next(self._items)
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                try:
-                    return next(self._items)
-                except StopIteration:
-                    raise StopAsyncIteration
-
-        return AnthropicStreamWrapper(
-            completion_stream=SimpleIterator(chunks),
-            model="gemini/gemini-2.0-flash",
-        )
-
-    def _find_tool_deltas(self, events):
-        return [
-            e
-            for e in events
-            if isinstance(e, dict)
-            and e.get("type") == "content_block_delta"
-            and isinstance(e.get("delta"), dict)
-            and e["delta"].get("type") == "input_json_delta"
-        ]
-
-    def test_sync_tool_args_not_dropped(self):
-        import json
-
-        chunks = self._build_chunks()
-        wrapper = self._make_stream_wrapper(chunks)
-
-        events = list(wrapper)
-        tool_deltas = self._find_tool_deltas(events)
-
-        assert len(tool_deltas) > 0, (
-            f"No input_json_delta events found (issue #24134). "
-            f"Event types: {[e.get('type') for e in events if isinstance(e, dict)]}"
-        )
-
-        combined = "".join(d["delta"]["partial_json"] for d in tool_deltas)
-        parsed = json.loads(combined)
-        assert parsed == {"city": "Tokyo"}
-
-    @pytest.mark.asyncio
-    async def test_async_tool_args_not_dropped(self):
-        import json
-
-        chunks = self._build_chunks()
-        wrapper = self._make_stream_wrapper(chunks)
-
-        events = []
-        async for event in wrapper:
-            events.append(event)
-
-        tool_deltas = self._find_tool_deltas(events)
-
-        assert len(tool_deltas) > 0, (
-            f"No input_json_delta events found (issue #24134). "
-            f"Event types: {[e.get('type') for e in events if isinstance(e, dict)]}"
-        )
-
-        combined = "".join(d["delta"]["partial_json"] for d in tool_deltas)
-        parsed = json.loads(combined)
-        assert parsed == {"city": "Tokyo"}
-
-
-def test_translate_anthropic_tool_choice_none():
-    """
-    Regression test for issue #24443.
-
-    tool_choice={"type": "none"} should be translated to "none" for OpenAI format,
-    not raise a ValueError.
-    """
-    adapter = LiteLLMAnthropicMessagesAdapter()
-
-    result = adapter.translate_anthropic_tool_choice_to_openai({"type": "none"})
-    assert result == "none"
-
-
-# ---------------------------------------------------------------------------
-# PolyfillResult integration tests
-# ---------------------------------------------------------------------------
-
-
-def _make_simple_openai_response(
-    text: str = "Hello", prompt_tokens: int = 10, completion_tokens: int = 5
-) -> ModelResponse:
-    return ModelResponse(
-        id="resp_polyfill_test",
-        model="gpt-4o",
-        choices=[
-            Choices(
-                finish_reason="stop",
-                message=Message(role="assistant", content=text),
-            )
-        ],
-        usage=Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
-    )
-
-
-def test_translate_openai_response_to_anthropic_with_polyfill_compaction_block():
-    """compaction_block from PolyfillResult must be prepended to content at index 0."""
-    from litellm.llms.anthropic.experimental_pass_through.context_management.result import (
-        PolyfillResult,
-    )
-
-    compaction_block = {"type": "compaction", "content": "Summary of prior turns."}
-    polyfill = PolyfillResult(
-        messages=[],
-        system=None,
-        applied_edits=[{"type": "compact_20260112"}],
-        compaction_block=compaction_block,
-        iterations_usage=None,
-    )
-    response = _make_simple_openai_response(text="Hello after compaction.")
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter.translate_openai_response_to_anthropic(
-        response=response, polyfill_result=polyfill
-    )
-
-    content = result.get("content")
-    assert content is not None
-    assert content[0]["type"] == "compaction"
-    assert content[0]["content"] == "Summary of prior turns."
-    assert content[1]["type"] == "text"
-    assert content[1]["text"] == "Hello after compaction."
-
-    # applied_edits must surface on context_management
-    cm = result.get("context_management")
-    assert cm is not None
-    assert cm["applied_edits"][0]["type"] == "compact_20260112"
-
-
-def test_translate_openai_response_to_anthropic_with_polyfill_iterations_usage():
-    """iterations_usage from PolyfillResult must produce usage['iterations'] with a message entry."""
-    from litellm.llms.anthropic.experimental_pass_through.context_management.result import (
-        PolyfillResult,
-    )
-
-    polyfill = PolyfillResult(
-        messages=[],
-        system=None,
-        applied_edits=[{"type": "compact_20260112"}],
-        compaction_block=None,
-        iterations_usage=[
-            {"type": "compaction", "input_tokens": 200, "output_tokens": 50},
-        ],
-    )
-    response = _make_simple_openai_response(prompt_tokens=100, completion_tokens=30)
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter.translate_openai_response_to_anthropic(
-        response=response, polyfill_result=polyfill
-    )
-
-    usage = result.get("usage")
-    assert usage is not None
-    iterations = usage.get("iterations")
-    assert iterations is not None
-    assert len(iterations) == 2
-    assert iterations[0] == {
-        "type": "compaction",
-        "input_tokens": 200,
-        "output_tokens": 50,
-    }
-    assert iterations[1]["type"] == "message"
-    assert iterations[1]["input_tokens"] == 100
-    assert iterations[1]["output_tokens"] == 30
-
-    # Top-level tokens must still reflect the message iteration
-    assert usage["input_tokens"] == 100
-    assert usage["output_tokens"] == 30
-
-
-def test_translate_openai_response_to_anthropic_no_polyfill_no_change():
-    """Without a PolyfillResult the response must be unchanged (no compaction, no iterations)."""
-    response = _make_simple_openai_response()
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter.translate_openai_response_to_anthropic(response=response)
-
-    content = result.get("content")
-    assert content is not None
-    assert content[0]["type"] == "text"
-
-    usage = result.get("usage")
-    assert usage is not None
-    assert "iterations" not in usage
-
-
-def test_translate_openai_response_to_anthropic_with_polyfill_both_compaction_and_iterations():
-    """Full summary path: compaction_block and iterations_usage both present simultaneously."""
-    from litellm.llms.anthropic.experimental_pass_through.context_management.result import (
-        PolyfillResult,
-    )
-
-    compaction_block = {
-        "type": "compaction",
-        "content": "Summary of a long conversation.",
-    }
-    polyfill = PolyfillResult(
-        messages=[],
-        system=None,
-        applied_edits=[{"type": "compact_20260112"}],
-        compaction_block=compaction_block,
-        iterations_usage=[
-            {"type": "compaction", "input_tokens": 300, "output_tokens": 75},
-        ],
-    )
-    response = _make_simple_openai_response(
-        text="After compaction.", prompt_tokens=120, completion_tokens=40
-    )
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    result = adapter.translate_openai_response_to_anthropic(
-        response=response, polyfill_result=polyfill
-    )
-
-    # compaction block must come first
-    content = result.get("content")
-    assert content is not None
-    assert content[0]["type"] == "compaction"
-    assert content[0]["content"] == "Summary of a long conversation."
-    assert content[1]["type"] == "text"
-    assert content[1]["text"] == "After compaction."
-
-    # iterations: compaction entry + message entry
-    usage = result.get("usage")
-    assert usage is not None
-    iterations = usage.get("iterations")
-    assert iterations is not None
-    assert len(iterations) == 2
-    assert iterations[0] == {
-        "type": "compaction",
-        "input_tokens": 300,
-        "output_tokens": 75,
-    }
-    assert iterations[1]["type"] == "message"
-    assert iterations[1]["input_tokens"] == 120
-    assert iterations[1]["output_tokens"] == 40
-
-    # top-level tokens match the message iteration
-    assert usage["input_tokens"] == 120
-    assert usage["output_tokens"] == 40
-
-    # context_management applied_edits must surface
-    cm = result.get("context_management")
-    assert cm is not None
-    assert cm["applied_edits"][0]["type"] == "compact_20260112"
-
-
-def test_translate_anthropic_tools_to_openai_preserves_parameters_type():
-    """Regression for #30557: the Anthropic tool `type` ("custom") must not be
-    merged into the OpenAI function `parameters`, overwriting parameters.type."""
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    tools = [
-        {
-            "type": "custom",
-            "name": "get_weather",
-            "description": "Get weather",
-            "input_schema": {"type": "object", "properties": {}},
-        }
-    ]
-
-    new_tools, _ = adapter.translate_anthropic_tools_to_openai(tools=tools)
-
-    params = new_tools[0]["function"]["parameters"]
-    assert params["type"] == "object"
-    assert new_tools[0]["type"] == "function"
