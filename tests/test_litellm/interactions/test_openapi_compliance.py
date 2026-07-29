@@ -173,7 +173,8 @@ class TestResponseCompliance:
         """Verify status enum values match spec."""
         schema = spec_dict["components"]["schemas"]["CreateModelInteractionParams"]
         status_prop = schema["properties"]["status"]
-        # Google Interactions API uses lowercase status values (updated Feb 2026)
+        # Google Interactions API uses lowercase status values (updated Feb 2026;
+        # "queued" added to the live spec after budget_exceeded).
         expected_statuses = [
             "in_progress",
             "requires_action",
@@ -182,6 +183,7 @@ class TestResponseCompliance:
             "cancelled",
             "incomplete",
             "budget_exceeded",
+            "queued",
         ]
         assert status_prop["enum"] == expected_statuses
         print(f"✓ Status enum values: {expected_statuses}")

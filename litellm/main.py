@@ -968,13 +968,20 @@ def responses_api_bridge_check(
             model_info["mode"] = mode
 
     # OpenAI/Azure gpt-5.4+ chat-completions calls with both tools + reasoning_effort
-    # must be bridged to Responses API.
+    # must be bridged to Responses API. gpt-5.6+ with tools bridges even without
+    # reasoning_effort, because OpenAI applies a default effort server-side and
+    # rejects tools on /v1/chat/completions for that family.
     if (
         custom_llm_provider in ("openai", "azure")
-        and OpenAIGPT5Config.is_model_gpt_5_4_plus_model(model)
-        and tools
-        and reasoning_effort is not None
         and model_info.get("mode") != "responses"
+        and (
+            (
+                OpenAIGPT5Config.is_model_gpt_5_4_plus_model(model)
+                and tools
+                and reasoning_effort is not None
+            )
+            or (OpenAIGPT5Config.is_model_gpt_5_6_plus_model(model) and tools)
+        )
     ):
         model_info["mode"] = "responses"
         model = model.replace("responses/", "")

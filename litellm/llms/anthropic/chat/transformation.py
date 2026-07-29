@@ -380,9 +380,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             for key, value in schema.items():
                 if key in {"properties", "$defs"} and isinstance(value, dict):
                     if any(
-                        AnthropicConfig._schema_has_unsupported_output_constraints(
-                            item
-                        )
+                        AnthropicConfig._schema_has_unsupported_output_constraints(item)
                         for item in value.values()
                     ):
                         return True
@@ -393,9 +391,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                         return True
                 elif key in {"anyOf", "allOf", "oneOf"} and isinstance(value, list):
                     if any(
-                        AnthropicConfig._schema_has_unsupported_output_constraints(
-                            item
-                        )
+                        AnthropicConfig._schema_has_unsupported_output_constraints(item)
                         for item in value
                     ):
                         return True

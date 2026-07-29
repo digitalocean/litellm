@@ -87,17 +87,27 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
         return model_name.startswith("gpt-5.4")
 
     @classmethod
-    def is_model_gpt_5_4_plus_model(cls, model: str) -> bool:
-        """Check if the model is gpt-5.4 or newer (5.4, 5.5, 5.6, etc., including pro)."""
+    def _gpt_5_minor_version_at_least(cls, model: str, minimum: int) -> bool:
+        """Return True if model is gpt-5.<minor> with minor >= minimum (e.g. gpt-5.6-sol)."""
         model_name = model.split("/")[-1]
         if not model_name.startswith("gpt-5."):
             return False
         try:
             version_str = model_name.replace("gpt-5.", "").split("-")[0]
             major = version_str.split(".")[0]
-            return int(major) >= 4
+            return int(major) >= minimum
         except (ValueError, IndexError):
             return False
+
+    @classmethod
+    def is_model_gpt_5_4_plus_model(cls, model: str) -> bool:
+        """Check if the model is gpt-5.4 or newer (5.4, 5.5, 5.6, etc., including pro)."""
+        return cls._gpt_5_minor_version_at_least(model, 4)
+
+    @classmethod
+    def is_model_gpt_5_6_plus_model(cls, model: str) -> bool:
+        """Check if the model is gpt-5.6 or newer (5.6, 5.6-sol/luna/terra, etc.)."""
+        return cls._gpt_5_minor_version_at_least(model, 6)
 
     @classmethod
     def _supports_reasoning_effort_level(cls, model: str, level: str) -> bool:
