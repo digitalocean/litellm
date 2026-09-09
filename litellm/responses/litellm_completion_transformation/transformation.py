@@ -950,7 +950,7 @@ class LiteLLMCompletionResponsesConfig:
         """
         ChatCompletionToolMessage is used to indicate the output from a tool call
         """
-        call_id = tool_call_output.get("call_id")
+        call_id = tool_call_output.get("call_id") or tool_call_output.get("id")
         # If call_id is missing or empty, skip this message
         # Empty call_id means we can't create a valid tool message
         if not call_id:
@@ -1027,14 +1027,18 @@ class LiteLLMCompletionResponsesConfig:
             except Exception:
                 return str(output)
 
+        output_value = tool_call_output.get("output")
+        if output_value is None and tool_call_output.get("type") == "web_search_call":
+            output_value = tool_call_output.get("action")
+
         tool_output_message = ChatCompletionToolMessage(
             role="tool",
-            content=_normalize_function_call_output_to_tool_content(tool_call_output.get("output")),
+            content=_normalize_function_call_output_to_tool_content(output_value),
             tool_call_id=str(call_id),
         )
 
         _tool_use_definition = TOOL_CALLS_CACHE.get_cache(
-            key=tool_call_output.get("call_id") or "",
+            key=str(call_id),
         )
         if _tool_use_definition:
             """

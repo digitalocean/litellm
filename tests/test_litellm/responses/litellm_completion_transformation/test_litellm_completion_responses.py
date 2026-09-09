@@ -3000,8 +3000,9 @@ class TestCacheControlPreservation:
     def test_input_item_object_transformation_for_web_search_call(self):
         input_item = SimpleNamespace(
             type="web_search_call",
-            call_id="ws_call_2",
-            output="search complete",
+            id="ws_call_2",
+            status="completed",
+            action={"type": "search", "query": "latest ai news"},
         )
         messages = LiteLLMCompletionResponsesConfig._transform_responses_api_input_item_to_chat_completion_message(
             input_item
@@ -3009,6 +3010,7 @@ class TestCacheControlPreservation:
         assert len(messages) == 1
         assert messages[0].get("role") == "tool"
         assert messages[0].get("tool_call_id") == "ws_call_2"
+        assert "latest ai news" in messages[0].get("content")
 
     def test_cache_control_preserved_for_input_file_block(self):
         content = [
