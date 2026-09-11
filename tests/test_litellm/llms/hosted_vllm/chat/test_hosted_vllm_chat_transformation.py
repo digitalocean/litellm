@@ -376,10 +376,11 @@ def test_hosted_vllm_assistant_tool_use_does_not_duplicate_existing_tool_calls()
     ]
 
 
-def test_hosted_vllm_preserves_tool_function_strict():
+def test_hosted_vllm_preserves_tool_strict_schema_fields():
     """
-    Modern vLLM honors tools[].function.strict for auto tool-choice constrained
-    decoding. hosted_vllm must not strip it (historical workaround for #6088).
+    Modern vLLM honors OpenAI strict tool schemas, including
+    tools[].function.strict and additionalProperties:false.
+    hosted_vllm must not strip either (historical workaround for #6088).
     """
     config = HostedVLLMChatConfig()
     optional_params = config.map_openai_params(
@@ -413,8 +414,7 @@ def test_hosted_vllm_preserves_tool_function_strict():
     tools = optional_params["tools"]
     assert len(tools) == 1
     assert tools[0]["function"]["strict"] is True
-    # additionalProperties:false is still scrubbed for compatibility
-    assert "additionalProperties" not in tools[0]["function"]["parameters"]
+    assert tools[0]["function"]["parameters"]["additionalProperties"] is False
 
 
 def test_hosted_vllm_custom_tools_are_converted_to_function_tools():
