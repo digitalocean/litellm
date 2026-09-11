@@ -33,7 +33,6 @@ from litellm.types.llms.openai import (
     ChatCompletionVideoUrlObject,
 )
 
-from ....utils import _remove_additional_properties, _remove_strict_from_schema
 from ...openai.chat.gpt_transformation import OpenAIGPTConfig
 
 
@@ -101,8 +100,9 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
     ) -> dict:
         _tools = non_default_params.pop("tools", None)
         if _tools is not None:
-            _tools = _remove_additional_properties(_tools)
-            _tools = _remove_strict_from_schema(_tools)
+            # Preserve tools[].function.strict and additionalProperties.
+            # Both were stripped for old vLLM (BerriAI/litellm#6088); modern
+            # vLLM documents them as required for OpenAI-style strict tool schemas.
             if isinstance(_tools, list):
                 _tools = self._convert_custom_tools_to_function_tools(_tools)
         if _tools is not None:

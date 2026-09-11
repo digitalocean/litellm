@@ -376,6 +376,47 @@ def test_hosted_vllm_assistant_tool_use_does_not_duplicate_existing_tool_calls()
     ]
 
 
+def test_hosted_vllm_preserves_tool_strict_schema_fields():
+    """
+    Modern vLLM honors OpenAI strict tool schemas, including
+    tools[].function.strict and additionalProperties:false.
+    hosted_vllm must not strip either (historical workaround for #6088).
+    """
+    config = HostedVLLMChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "evaluate_output_columns",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "attempts": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                }
+                            },
+                            "required": ["attempts"],
+                        },
+                    },
+                }
+            ]
+        },
+        optional_params={},
+        model="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert len(tools) == 1
+    assert tools[0]["function"]["strict"] is True
+    assert tools[0]["function"]["parameters"]["additionalProperties"] is False
+
+
 def test_hosted_vllm_custom_tools_are_converted_to_function_tools():
     config = HostedVLLMChatConfig()
     optional_params = config.map_openai_params(
