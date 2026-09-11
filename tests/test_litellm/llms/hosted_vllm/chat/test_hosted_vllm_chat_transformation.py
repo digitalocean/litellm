@@ -376,6 +376,47 @@ def test_hosted_vllm_assistant_tool_use_does_not_duplicate_existing_tool_calls()
     ]
 
 
+def test_hosted_vllm_preserves_tool_function_strict():
+    """
+    Modern vLLM honors tools[].function.strict for auto tool-choice constrained
+    decoding. hosted_vllm must not strip it (historical workaround for #6088).
+    """
+    config = HostedVLLMChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "evaluate_output_columns",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "attempts": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                }
+                            },
+                            "required": ["attempts"],
+                        },
+                    },
+                }
+            ]
+        },
+        optional_params={},
+        model="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert len(tools) == 1
+    assert tools[0]["function"]["strict"] is True
+    # additionalProperties:false is still scrubbed for compatibility
+    assert "additionalProperties" not in tools[0]["function"]["parameters"]
+
+
 def test_hosted_vllm_custom_tools_are_converted_to_function_tools():
     config = HostedVLLMChatConfig()
     optional_params = config.map_openai_params(
