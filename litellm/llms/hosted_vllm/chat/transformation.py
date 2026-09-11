@@ -116,23 +116,7 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
                         thinking.get("budget_tokens", 0)
                     )
 
-        mapped = super().map_openai_params(
-            non_default_params, optional_params, model, drop_params
-        )
-
-        # TEMP preview proof — revert after verifying DI outbound tools keep
-        # strict / additionalProperties. Logs at WARNING so it shows without
-        # LITELLM_LOG=DEBUG.
-        _tools_out = mapped.get("tools") or optional_params.get("tools")
-        if _tools_out:
-            import logging
-
-            logging.getLogger("hosted_vllm_debug").warning(
-                "hosted_vllm tools after map_openai_params: %s",
-                json.dumps(_tools_out)[:4000],
-            )
-
-        return mapped
+        return super().map_openai_params(non_default_params, optional_params, model, drop_params)
 
     def _get_openai_compatible_provider_info(
         self, api_base: Optional[str], api_key: Optional[str]
