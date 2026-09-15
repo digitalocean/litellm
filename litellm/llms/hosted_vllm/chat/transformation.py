@@ -2,7 +2,10 @@
 Translate from OpenAI's `/v1/chat/completions` to VLLM's `/v1/chat/completions`
 """
 
+import copy
 import json
+import os
+import re
 from typing import (
     Any,
     Coroutine,
@@ -15,6 +18,8 @@ from typing import (
     cast,
     overload,
 )
+
+from packaging.version import InvalidVersion, Version
 
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
     _get_image_mime_type_from_url,
@@ -32,9 +37,97 @@ from litellm.types.llms.openai import (
     ChatCompletionVideoObject,
     ChatCompletionVideoUrlObject,
 )
+from litellm.utils import _remove_additional_properties, _remove_strict_from_schema
 
-from ....utils import _remove_additional_properties, _remove_strict_from_schema
 from ...openai.chat.gpt_transformation import OpenAIGPTConfig
+
+# Pre-0.24.0 vLLM rejects tools[].function.strict (pydantic extra_forbidden);
+# see BerriAI/litellm#6088 and vllm-project/vllm#15526. v0.24.0+ accepts the
+# field (and uses it for strict tool calling).
+HOSTED_VLLM_TOOL_SCHEMA_MIN_VERSION = Version("0.24.0")
+
+# Successful GET {api_root}/version lookups, keyed by normalized api_base.
+_vllm_version_cache: Dict[str, str] = {}
+
+
+def _parse_vllm_version(raw: Optional[str]) -> Optional[Version]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.startswith(("v", "V")):
+        s = s[1:]
+    try:
+        return Version(s)
+    except InvalidVersion:
+        match = re.match(r"(\d+\.\d+\.\d+)", s)
+        if not match:
+            return None
+        try:
+            return Version(match.group(1))
+        except InvalidVersion:
+            return None
+
+
+def _should_strip_legacy_tool_schema_fields(vllm_version: Optional[str]) -> bool:
+    """Return True only when we know the server is older than v0.24.0."""
+    parsed = _parse_vllm_version(vllm_version)
+    if parsed is None:
+        return False
+    return parsed < HOSTED_VLLM_TOOL_SCHEMA_MIN_VERSION
+
+
+def _hosted_vllm_version_url(api_base: str) -> str:
+    """Map chat api_base (.../v1) to the instrumentator /version URL."""
+    base = api_base.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base.rstrip('/')}/version"
+
+
+def _fetch_vllm_version(api_base: str, timeout: float = 1.0) -> Optional[str]:
+    if api_base in _vllm_version_cache:
+        return _vllm_version_cache[api_base]
+    try:
+        import httpx
+
+        response = httpx.get(_hosted_vllm_version_url(api_base), timeout=timeout)
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        version = payload.get("version")
+        if not isinstance(version, str) or not version.strip():
+            return None
+        _vllm_version_cache[api_base] = version
+        return version
+    except Exception:
+        return None
+
+
+def _resolve_vllm_version(
+    *,
+    explicit_version: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> Optional[str]:
+    if explicit_version:
+        return explicit_version
+    env_version = os.getenv("HOSTED_VLLM_VERSION")
+    if env_version:
+        return env_version
+    resolved_api_base = api_base or get_secret_str("HOSTED_VLLM_API_BASE")
+    if resolved_api_base:
+        return _fetch_vllm_version(resolved_api_base)
+    return None
+
+
+def _strip_legacy_tool_schema_fields(tools: Any) -> Any:
+    tools_copy = copy.deepcopy(tools)
+    tools_copy = _remove_additional_properties(tools_copy)
+    tools_copy = _remove_strict_from_schema(tools_copy)
+    return tools_copy
 
 
 class HostedVLLMChatConfig(OpenAIGPTConfig):
@@ -99,12 +192,23 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
         model: str,
         drop_params: bool,
     ) -> dict:
+        explicit_version = non_default_params.pop("vllm_version", None)
+        if explicit_version is None:
+            explicit_version = optional_params.pop("vllm_version", None)
+
         _tools = non_default_params.pop("tools", None)
         if _tools is not None:
-            _tools = _remove_additional_properties(_tools)
-            _tools = _remove_strict_from_schema(_tools)
+            # Preserve tools[].function.strict and additionalProperties on
+            # modern vLLM (v0.24.0+). Strip only when we know the server is
+            # older — BerriAI/litellm#6088 / vllm-project/vllm#15526.
             if isinstance(_tools, list):
                 _tools = self._convert_custom_tools_to_function_tools(_tools)
+            vllm_version = _resolve_vllm_version(
+                explicit_version=explicit_version if isinstance(explicit_version, str) else None,
+                api_base=optional_params.get("api_base"),
+            )
+            if _should_strip_legacy_tool_schema_fields(vllm_version):
+                _tools = _strip_legacy_tool_schema_fields(_tools)
         if _tools is not None:
             non_default_params["tools"] = _tools
 
@@ -117,6 +221,40 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
                     )
 
         return super().map_openai_params(non_default_params, optional_params, model, drop_params)
+
+    def transform_request(
+        self,
+        model: str,
+        messages: List[AllMessageValues],
+        optional_params: dict,
+        litellm_params: dict,
+        headers: dict,
+    ) -> dict:
+        tools = optional_params.get("tools")
+        if tools is not None:
+            explicit_version = litellm_params.get("vllm_version")
+            if not isinstance(explicit_version, str):
+                explicit_version = None
+            api_base = litellm_params.get("api_base")
+            if not isinstance(api_base, str):
+                api_base = None
+            vllm_version = _resolve_vllm_version(
+                explicit_version=explicit_version,
+                api_base=api_base,
+            )
+            if _should_strip_legacy_tool_schema_fields(vllm_version):
+                optional_params = {
+                    **optional_params,
+                    "tools": _strip_legacy_tool_schema_fields(tools),
+                }
+
+        return super().transform_request(
+            model=model,
+            messages=messages,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            headers=headers,
+        )
 
     def _get_openai_compatible_provider_info(
         self, api_base: Optional[str], api_key: Optional[str]

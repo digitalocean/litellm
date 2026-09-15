@@ -376,6 +376,140 @@ def test_hosted_vllm_assistant_tool_use_does_not_duplicate_existing_tool_calls()
     ]
 
 
+def test_hosted_vllm_preserves_tool_strict_schema_fields():
+    """
+    Modern vLLM honors OpenAI strict tool schemas, including
+    tools[].function.strict and additionalProperties:false.
+    hosted_vllm must not strip either when version is unknown or >= 0.24.0
+    (historical workaround for #6088 only applies to older servers).
+    """
+    config = HostedVLLMChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "evaluate_output_columns",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "attempts": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                }
+                            },
+                            "required": ["attempts"],
+                        },
+                    },
+                }
+            ]
+        },
+        optional_params={},
+        model="hosted_vllm/deepseek-ai/DeepSeek-V4-Flash",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert len(tools) == 1
+    assert tools[0]["function"]["strict"] is True
+    assert tools[0]["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_hosted_vllm_preserves_tool_strict_schema_fields_for_v0_24():
+    config = HostedVLLMChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "vllm_version": "0.24.0",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "evaluate_output_columns",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {"attempts": {"type": "array"}},
+                            "required": ["attempts"],
+                        },
+                    },
+                }
+            ],
+        },
+        optional_params={},
+        model="hosted_vllm/test",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert tools[0]["function"]["strict"] is True
+    assert tools[0]["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_hosted_vllm_strips_tool_strict_schema_fields_for_pre_0_24():
+    config = HostedVLLMChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "vllm_version": "0.23.0",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "evaluate_output_columns",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {"attempts": {"type": "array"}},
+                            "required": ["attempts"],
+                        },
+                    },
+                }
+            ],
+        },
+        optional_params={},
+        model="hosted_vllm/test",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert "strict" not in tools[0]["function"]
+    assert "additionalProperties" not in tools[0]["function"]["parameters"]
+
+
+def test_hosted_vllm_transform_request_strips_for_pre_0_24():
+    config = HostedVLLMChatConfig()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "strict": True,
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"x": {"type": "string"}},
+                    "required": ["x"],
+                },
+            },
+        }
+    ]
+    request = config.transform_request(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        optional_params={"tools": tools},
+        litellm_params={"vllm_version": "v0.22.1", "api_base": "http://localhost:8000/v1"},
+        headers={},
+    )
+    assert "strict" not in request["tools"][0]["function"]
+    assert "additionalProperties" not in request["tools"][0]["function"]["parameters"]
+    # original tools dict not mutated
+    assert tools[0]["function"]["strict"] is True
+
+
 def test_hosted_vllm_custom_tools_are_converted_to_function_tools():
     config = HostedVLLMChatConfig()
     optional_params = config.map_openai_params(
