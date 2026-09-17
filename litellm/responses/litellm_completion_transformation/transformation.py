@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from openai.types.responses import ResponseFunctionToolCall
 from openai.types.responses.response_create_params import ResponseInputParam
 from openai.types.responses.tool_param import FunctionToolParam
+from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from litellm._logging import verbose_logger
@@ -64,6 +65,7 @@ from litellm.types.utils import (
     ModelResponse,
     Usage,
 )
+from litellm.utils import convert_to_dict
 
 from .custom_tools import (
     convert_custom_tool_to_function_tool,
@@ -395,7 +397,11 @@ class LiteLLMCompletionResponsesConfig:
             messages.append(ChatCompletionUserMessage(role="user", content=input))
         elif isinstance(input, list):
             existing_tool_call_ids: set[str] = set()
-            for _input in input:
+            normalized_input = [
+                convert_to_dict(item) if isinstance(item, (BaseModel, dict)) else item
+                for item in input
+            ]
+            for _input in normalized_input:
                 chat_completion_messages = (
                     LiteLLMCompletionResponsesConfig._transform_responses_api_input_item_to_chat_completion_message(
                         input_item=_input
@@ -911,7 +917,10 @@ class LiteLLMCompletionResponsesConfig:
         """
         Check if the input item is a tool call output
         """
-        return input_item.get("type") in [
+        item_type = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+            input_item, "type"
+        )
+        return item_type in [
             "function_call_output",
             "custom_tool_call_output",
             "web_search_call",
@@ -926,7 +935,9 @@ class LiteLLMCompletionResponsesConfig:
         Both need to be reconstructed as assistant tool_calls for Chat
         Completions providers.
         """
-        return input_item.get("type") in ("function_call", "custom_tool_call")
+        return LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+            input_item, "type"
+        ) in ("function_call", "custom_tool_call")
 
     @staticmethod
     def _transform_responses_api_tool_call_output_to_chat_completion_message(
@@ -1262,7 +1273,11 @@ class LiteLLMCompletionResponsesConfig:
             return [], None
         chat_completion_tools: list[ChatCompletionToolParam | OpenAIMcpServerTool] = []
         web_search_options: OpenAIWebSearchOptions | None = None
-        for tool in tools:
+        normalized_tools = [
+            convert_to_dict(tool) if isinstance(tool, (BaseModel, dict)) else tool
+            for tool in tools
+        ]
+        for tool in normalized_tools:
             if tool.get("type") == "mcp":
                 chat_completion_tools.append(cast(OpenAIMcpServerTool, tool))
             elif tool.get("type") == "web_search_preview" or tool.get("type") == "web_search":

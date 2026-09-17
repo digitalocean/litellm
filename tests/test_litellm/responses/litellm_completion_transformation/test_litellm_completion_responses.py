@@ -2940,3 +2940,70 @@ def test_function_call_tool_id_falls_back_to_unique_id_for_degenerate_call_id():
         id="fc_2", call_id="call_tokyo", name="get_weather", arguments="{}"
     )
     assert convert(openai)["id"] == "call_tokyo"
+
+
+class TestTypedResponsesInputItems:
+    """INF-1514 / NFRNC-1495: OpenAI SDK pydantic objects replayed as input must not 500 on .get"""
+
+    def test_typed_web_search_call_and_custom_tool_call_input_items(self):
+        from pydantic import BaseModel
+
+        class ResponseFunctionWebSearchLike(BaseModel):
+            type: str = "web_search_call"
+            id: str = "ws_123"
+            status: str = "completed"
+
+        class ResponseCustomToolCallLike(BaseModel):
+            type: str = "custom_tool_call"
+            id: str = "ctc_123"
+            call_id: str = "call_123"
+            name: str = "my_tool"
+            input: str = "{}"
+
+        class WebSearchToolLike(BaseModel):
+            type: str = "web_search"
+            search_context_size: str = "medium"
+
+        web_search_call = ResponseFunctionWebSearchLike()
+        custom_tool_call = ResponseCustomToolCallLike()
+        web_search_tool = WebSearchToolLike()
+
+        assert not hasattr(web_search_call, "get")
+        assert not hasattr(custom_tool_call, "get")
+        assert not hasattr(web_search_tool, "get")
+
+        assert LiteLLMCompletionResponsesConfig._is_input_item_tool_call_output(
+            web_search_call
+        )
+        assert not LiteLLMCompletionResponsesConfig._is_input_item_function_call(
+            web_search_call
+        )
+        assert not LiteLLMCompletionResponsesConfig._is_input_item_tool_call_output(
+            custom_tool_call
+        )
+        assert LiteLLMCompletionResponsesConfig._is_input_item_function_call(
+            custom_tool_call
+        )
+
+        web_search_only = LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+            input=[web_search_call]
+        )
+        assert web_search_only == []
+
+        messages = LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+            input=[web_search_call, custom_tool_call]
+        )
+        assert len(messages) == 1
+        assert messages[0]["role"] == "assistant"
+        assert messages[0]["tool_calls"][0]["id"] == "call_123"
+        assert messages[0]["tool_calls"][0]["function"]["name"] == "my_tool"
+
+        (
+            result_tools,
+            web_search_options,
+        ) = LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+            tools=[web_search_tool]
+        )
+        assert result_tools == []
+        assert web_search_options is not None
+        assert web_search_options.get("search_context_size") == "medium"
