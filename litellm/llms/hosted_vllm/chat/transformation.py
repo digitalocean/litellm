@@ -180,6 +180,11 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
         for message in messages:
             if message["role"] == "assistant":
                 message.pop("thinking_blocks", None)
+                # vLLM chat templates read "reasoning" on inbound assistant messages,
+                # but LiteLLM's outbound path normalizes to "reasoning_content".
+                # Reverse the rename so vLLM can reconstruct chain-of-thought.
+                if "reasoning_content" in message and "reasoning" not in message:
+                    message["reasoning"] = message.pop("reasoning_content")
                 existing_content = message.get("content")
                 if isinstance(existing_content, list):
                     text_parts = []
