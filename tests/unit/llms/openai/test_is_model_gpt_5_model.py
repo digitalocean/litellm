@@ -43,6 +43,7 @@ from litellm.llms.azure.chat.gpt_5_transformation import AzureOpenAIGPT5Config
 GPT5_MODELS = [
     "gpt-6-astra",
     "openai/gpt-6-astra",
+    "gpt-6.1-chat",  # versioned gpt-6 chat stays on the reasoning path
     "gpt-5",
     "gpt-5.1",
     "gpt-5.2",
@@ -73,6 +74,9 @@ NON_GPT5_MODELS = [
     "gpt-5-chat",  # gpt-5-chat family — regular chat path
     "gpt-5-chat-latest",  # gpt-5-chat family with alias suffix
     "gpt-5-chat-2025-08-07",  # gpt-5-chat family with date suffix
+    "gpt-6-chat",  # gpt-6-chat family — same chat/reasoning split as gpt-5-chat
+    "gpt-6-chat-latest",
+    "openai/gpt-6-chat-2026-09-01",
     "gpt-4",
     "gpt-4o",
     "gpt-4-turbo",
@@ -103,19 +107,30 @@ class TestOpenAIGPT5ConfigIsModelGpt5Model:
         ), f"Expected '{model}' NOT to be classified as a GPT-5 model"
 
     def test_versioned_chat_models_are_not_excluded_by_prefix(self):
-        """Core regression guard: gpt-5-chat prefix must not match versioned models."""
-        versioned_chat_models = ["gpt-5.1-chat", "gpt-5.2-chat", "gpt-5.3-chat"]
+        """Core regression guard: gpt-*-chat prefix must not match versioned models."""
+        versioned_chat_models = [
+            "gpt-5.1-chat",
+            "gpt-5.2-chat",
+            "gpt-5.3-chat",
+            "gpt-6.1-chat",
+        ]
         for model in versioned_chat_models:
             assert OpenAIGPT5Config.is_model_gpt_5_model(
                 model
             ), f"Regression: '{model}' was incorrectly excluded from GPT-5 path"
 
     def test_gpt5_chat_family_is_excluded(self):
-        """gpt-5-chat family should stay on the regular chat path."""
-        for model in ["gpt-5-chat", "gpt-5-chat-latest", "gpt-5-chat-2025-08-07"]:
+        """gpt-5-chat / gpt-6-chat families should stay on the regular chat path."""
+        for model in [
+            "gpt-5-chat",
+            "gpt-5-chat-latest",
+            "gpt-5-chat-2025-08-07",
+            "gpt-6-chat",
+            "gpt-6-chat-latest",
+        ]:
             assert not OpenAIGPT5Config.is_model_gpt_5_model(
                 model
-            ), f"Expected '{model}' (gpt-5-chat family) NOT to be on the GPT-5 path"
+            ), f"Expected '{model}' (chat family) NOT to be on the GPT-5 path"
 
 
 # Models that are gpt-5.4 or newer. main.py gates the automatic switch to the
@@ -124,6 +139,7 @@ class TestOpenAIGPT5ConfigIsModelGpt5Model:
 GPT5_4_PLUS_MODELS = [
     "gpt-6-astra",
     "openai/gpt-6-astra",
+    "gpt-6.1-chat",
     "gpt-5.4",
     "gpt-5.5",
     "gpt-5.5-pro",
@@ -135,6 +151,8 @@ GPT5_4_PLUS_MODELS = [
 ]
 
 GPT5_PRE_5_4_MODELS = [
+    "gpt-6-chat",
+    "gpt-6-chat-latest",
     "gpt-5",
     "gpt-5.1",
     "gpt-5.2",
@@ -162,6 +180,7 @@ class TestOpenAIGPT5ConfigIsModelGpt54PlusModel:
 GPT5_6_PLUS_MODELS = [
     "gpt-6-astra",
     "openai/gpt-6-astra",
+    "gpt-6.1-chat",
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -169,6 +188,8 @@ GPT5_6_PLUS_MODELS = [
 ]
 
 GPT5_PRE_5_6_MODELS = [
+    "gpt-6-chat",
+    "gpt-6-chat-latest",
     "gpt-5",
     "gpt-5.4",
     "gpt-5.4-mini",
@@ -231,8 +252,13 @@ class TestAzureOpenAIGPT5ConfigIsModelGpt5Model:
         ), f"Expected Azure '{model}' NOT to be classified as a GPT-5 model"
 
     def test_versioned_chat_models_are_not_excluded_by_prefix(self):
-        """Core regression guard: gpt-5-chat prefix must not match versioned models."""
-        versioned_chat_models = ["gpt-5.1-chat", "gpt-5.2-chat", "gpt-5.3-chat"]
+        """Core regression guard: gpt-*-chat prefix must not match versioned models."""
+        versioned_chat_models = [
+            "gpt-5.1-chat",
+            "gpt-5.2-chat",
+            "gpt-5.3-chat",
+            "gpt-6.1-chat",
+        ]
         for model in versioned_chat_models:
             assert AzureOpenAIGPT5Config.is_model_gpt_5_model(
                 model

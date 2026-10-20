@@ -65,11 +65,14 @@ def _get_effort_level(value: str | dict | None) -> str | None:
 
 
 GPT_REASONING_SERIES_MARKERS: Final = ("gpt-5", "gpt-6")
+GPT_CHAT_FAMILY_PREFIXES: Final = ("gpt-5-chat", "gpt-6-chat")
 
 
 def is_gpt_reasoning_series_name(model: str) -> bool:
     normalized: Final = model.split("/")[-1]
-    return any(marker in model for marker in GPT_REASONING_SERIES_MARKERS) and not normalized.startswith("gpt-5-chat")
+    if any(normalized.startswith(prefix) for prefix in GPT_CHAT_FAMILY_PREFIXES):
+        return False
+    return any(marker in model for marker in GPT_REASONING_SERIES_MARKERS)
 
 
 class OpenAIGPT5Config(OpenAIGPTConfig):
@@ -117,7 +120,12 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
 
     @staticmethod
     def _gpt_series_version(model: str) -> tuple[int, int] | None:
-        match: Final = _GPT_SERIES_VERSION.match(model.split("/")[-1])
+        model_name: Final = model.split("/")[-1]
+        # gpt-5-chat / gpt-6-chat are plain chat families, not reasoning-series
+        # version gates used for Responses bridging.
+        if any(model_name.startswith(prefix) for prefix in GPT_CHAT_FAMILY_PREFIXES):
+            return None
+        match: Final = _GPT_SERIES_VERSION.match(model_name)
         if match is None:
             return None
         return int(match.group(1)), int(match.group(2) or 0)
