@@ -18,7 +18,6 @@ from aiohttp import ClientSession, TCPConnector
 import litellm
 from litellm.llms.custom_httpx.aiohttp_transport import LiteLLMAiohttpTransport
 from litellm.llms.custom_httpx.http_handler import (
-    _CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER,
     AsyncHTTPHandler,
     HTTPHandler,
     MaskedHTTPStatusError,
@@ -919,14 +918,6 @@ def fresh_llm_client_cache():
         litellm.in_memory_llm_clients_cache = previous
 
 
-def test_sole_referrer_handler_may_close_but_a_sharing_one_may_not():
-    from litellm.llms.custom_httpx.http_handler import _handler_may_close_client
-
-    assert _handler_may_close_client(_CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER, owns_client=True)
-    assert not _handler_may_close_client(_CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER + 1, owns_client=True)
-    assert not _handler_may_close_client(_CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER, owns_client=False)
-
-
 @pytest.fixture
 def keepalive_server():
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -956,39 +947,6 @@ def keepalive_server():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-
-
-def test_exclusively_owned_sync_client_pool_is_closed_when_handler_is_collected(keepalive_server):
-    handler = HTTPHandler()
-    pool = handler._client._transport._pool
-    client_ref = weakref.ref(handler._client)
-    handler.get(keepalive_server)
-
-    assert pool._connections, "setup failed: no pooled connection to release"
-
-    del handler
-    gc.collect()
-
-    assert client_ref() is None
-    assert pool._connections == []
-
-
-@pytest.mark.asyncio
-async def test_exclusively_owned_async_client_pool_is_closed_when_handler_is_collected(keepalive_server, monkeypatch):
-    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    monkeypatch.setattr(litellm, "force_ipv4", False)
-
-    handler = AsyncHTTPHandler()
-    pool = handler.client._transport._pool
-    await handler.get(keepalive_server)
-
-    assert pool._connections, "setup failed: no pooled connection to release"
-
-    del handler
-    gc.collect()
-    await asyncio.sleep(0.25)
-
-    assert pool._connections == []
 
 
 @pytest.mark.asyncio
@@ -1037,56 +995,6 @@ def _mock_transport() -> httpx.MockTransport:
     return httpx.MockTransport(respond)
 
 
-RELEASED_TOO_EARLY = "the handler was released while its response could still read"
-NEVER_RELEASED = "the handler outlived the response that was holding it"
-
-# Every method that can hand back a body the caller has not read yet, which is
-# every one that passes stream= down to send(). Parametrized so a method added
-# later is covered here rather than being the one that forgets to anchor.
-ASYNC_STREAMING_SENDS = ["post", "delete"]
-SYNC_STREAMING_SENDS = ["post", "patch", "put", "delete"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", ASYNC_STREAMING_SENDS)
-async def test_a_streaming_response_holds_its_handler_until_it_is_released(method):
-    """The finalizer must not run while a body this handler issued can still arrive.
-
-    ``_handler_may_close_client`` cannot see that body: it holds the connection it
-    reads from and never the client. Anchoring the handler to the response is what
-    withholds the close, and releasing the anchor is what still delivers one.
-    """
-    handler = AsyncHTTPHandler()
-    handler.client._transport = _mock_transport()
-    ref = weakref.ref(handler)
-    response = await getattr(handler, method)("https://example.invalid/stream", stream=True)
-
-    del handler
-    gc.collect()
-    assert ref() is not None, RELEASED_TOO_EARLY
-
-    assert await response.aread() == b"ab"
-    del response
-    gc.collect()
-    assert ref() is None, NEVER_RELEASED
-
-
-@pytest.mark.parametrize("method", SYNC_STREAMING_SENDS)
-def test_a_sync_streaming_response_holds_its_handler_until_it_is_released(method):
-    """The sync finalizer closes inline, so the same anchor has to hold it off."""
-    handler = HTTPHandler()
-    handler.client._transport = _mock_transport()
-    ref = weakref.ref(handler)
-    response = getattr(handler, method)("https://example.invalid/stream", stream=True)
-
-    del handler
-    gc.collect()
-    assert ref() is not None, RELEASED_TOO_EARLY
-
-    assert response.read() == b"ab"
-    del response
-    gc.collect()
-    assert ref() is None, NEVER_RELEASED
 
 
 @pytest.mark.asyncio
@@ -1269,134 +1177,6 @@ async def test_aiohttp_session_never_replays_one_upstreams_cookie_to_another():
     assert len(jar) == 0
     assert dict(jar.filter_cookies(URL("https://upstream-a.example.com"))) == {}
     await session.close()
-
-
-def _mint_session_on_dead_loop(handler: AsyncHTTPHandler) -> ClientSession:
-    """Create the transport's real ClientSession on a loop that then closes.
-
-    This is the lifecycle of every client minted for a short-lived event loop
-    (the loop-id-keyed LLM client cache creates one handler per loop): the
-    session outlives its loop and can only ever be disposed loop-lessly.
-    """
-    transport = handler.client._transport
-    assert isinstance(transport, LiteLLMAiohttpTransport)
-    loop = asyncio.new_event_loop()
-
-    async def _create() -> ClientSession:
-        return transport._get_valid_client_session()
-
-    session = loop.run_until_complete(_create())
-    loop.close()
-    return session
-
-
-def test_finalizer_without_running_loop_closes_dead_loop_session():
-    """A handler finalized with no running event loop must still dispose its
-    aiohttp session.
-
-    The async close can never run in that context; without the synchronous
-    fallback the session and its connector are abandoned to GC and emit
-    "Unclosed client session" / "Unclosed connector" warnings."""
-    handler = AsyncHTTPHandler(timeout=61.0)
-    session = _mint_session_on_dead_loop(handler)
-    assert not session.closed
-
-    del handler
-    gc.collect()
-
-    assert session.closed
-
-
-@pytest.mark.asyncio
-async def test_finalizer_with_running_loop_schedules_close_and_holds_task_ref():
-    """With a running loop, finalization schedules an async close and must keep
-    a strong reference to the task until it completes — a bare create_task()
-    result may be collected before it runs, leaving the session unclosed."""
-    handler = AsyncHTTPHandler(timeout=61.0)
-    transport = handler.client._transport
-    assert isinstance(transport, LiteLLMAiohttpTransport)
-    session = transport._get_valid_client_session()
-    assert not session.closed
-    del transport
-
-    baseline_tasks = set(AsyncHTTPHandler._finalizer_close_tasks)
-    del handler
-    gc.collect()
-
-    scheduled = AsyncHTTPHandler._finalizer_close_tasks - baseline_tasks
-    assert len(scheduled) == 1
-
-    await asyncio.gather(*scheduled)
-    assert session.closed
-    assert not (AsyncHTTPHandler._finalizer_close_tasks & scheduled)
-
-
-@pytest.mark.asyncio
-async def test_sync_close_helper_respects_session_ownership():
-    """The loop-less fallback closes only sessions the transport owns; a
-    shared session (e.g. the proxy's) must never be closed by a handler."""
-    owned_handler = AsyncHTTPHandler(timeout=61.0)
-    owned_transport = owned_handler.client._transport
-    assert isinstance(owned_transport, LiteLLMAiohttpTransport)
-    owned_session = owned_transport._get_valid_client_session()
-
-    baseline = set(LiteLLMAiohttpTransport._background_close_tasks)
-    owned_handler._dispose_wrapped_aiohttp_session()
-    scheduled = LiteLLMAiohttpTransport._background_close_tasks - baseline
-    await asyncio.gather(*scheduled)
-    assert owned_session.closed
-
-    shared_session = ClientSession()
-    shared_handler = AsyncHTTPHandler(timeout=61.0, shared_session=shared_session)
-    shared_transport = shared_handler.client._transport
-    assert isinstance(shared_transport, LiteLLMAiohttpTransport)
-    assert shared_transport._owns_session is False
-
-    shared_handler._dispose_wrapped_aiohttp_session()
-    assert not shared_session.closed
-
-    await shared_session.close()
-    await shared_handler.close()
-    await owned_handler.close()
-
-
-@pytest.mark.asyncio
-async def test_finalizer_close_done_consumes_exception():
-    """A failing finalizer close must have its exception retrieved by the done
-    callback, or asyncio emits "Task exception was never retrieved" at GC —
-    the same log noise the finalizer path exists to eliminate."""
-
-    async def failing_close() -> None:
-        raise RuntimeError("close failed")
-
-    task = asyncio.get_running_loop().create_task(failing_close())
-    AsyncHTTPHandler._finalizer_close_tasks.add(task)
-    await asyncio.sleep(0)
-
-    AsyncHTTPHandler._on_finalizer_close_done(task)
-    assert task not in AsyncHTTPHandler._finalizer_close_tasks
-
-    cancelled = asyncio.get_running_loop().create_task(asyncio.sleep(30))
-    cancelled.cancel()
-    await asyncio.sleep(0)
-    AsyncHTTPHandler._on_finalizer_close_done(cancelled)
-
-
-@pytest.mark.asyncio
-async def test_finalizer_on_live_loop_disposes_foreign_loop_session_without_scheduling():
-    """GC on a live loop (e.g. the app's) of a handler whose session belongs to
-    another, dead loop must not schedule aclose() here — that is the cross-loop
-    path the transport refuses — and must still dispose the session."""
-    handler = AsyncHTTPHandler(timeout=61.0)
-    session = await asyncio.to_thread(_mint_session_on_dead_loop, handler)
-    assert not session.closed
-
-    baseline_tasks = set(AsyncHTTPHandler._finalizer_close_tasks)
-    del handler
-    gc.collect()
-
-    assert AsyncHTTPHandler._finalizer_close_tasks == baseline_tasks
-    assert session.closed
 
 
 class _RetryClientHandler(AsyncHTTPHandler):
@@ -1826,3 +1606,36 @@ async def test_http2_disabled_by_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", False)
 
     assert AsyncHTTPHandler._should_use_aiohttp_transport() is True
+
+
+class TestHandlerGCDoesNotCloseInUseClient:
+    """Regression for litellm#24929: a cached AsyncHTTPHandler/HTTPHandler that
+    falls out of the client cache on TTL eviction must not close its
+    underlying httpx client via __del__. LLMClientCache stops referencing an
+    evicted handler but a streaming response can still be reading through its
+    client; closing on GC severs that connection mid-stream.
+    """
+
+    @pytest.mark.asyncio
+    async def test_async_handler_gc_does_not_close_client(self):
+        handler = AsyncHTTPHandler()
+        client = handler.client
+        assert not client.is_closed
+
+        del handler
+        gc.collect()
+        await asyncio.sleep(0.05)
+
+        assert not client.is_closed, "handler GC closed a client that may still be streaming"
+        await client.aclose()
+
+    def test_sync_handler_gc_does_not_close_client(self):
+        handler = HTTPHandler()
+        client = handler.client
+        assert not client.is_closed
+
+        del handler
+        gc.collect()
+
+        assert not client.is_closed, "handler GC closed a client that may still be streaming"
+        client.close()

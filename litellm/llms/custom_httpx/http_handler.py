@@ -7,12 +7,11 @@ import ssl
 import sys
 import threading
 import time
-import weakref
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from io import BytesIO
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Final, NoReturn, Optional, TypeAlias, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Final, NoReturn, Optional, TypeAlias, TypedDict, TypeVar
 
 import certifi
 import httpx
@@ -173,48 +172,6 @@ def _default_cached_client_timeout() -> httpx.Timeout:
     if configured is None:
         return _DEFAULT_TIMEOUT
     return httpx.Timeout(timeout=configured, connect=HTTP_HANDLER_CONNECT_TIMEOUT_SECONDS)
-
-
-_CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER: Final = 2
-
-
-def _handler_may_close_client(client_refcount: int, owns_client: bool) -> bool:
-    """
-    Whether a handler being finalized may close its client.
-
-    Only when the handler built the client and is still its sole referrer. Finalization
-    proves that nothing references the *handler*; it proves nothing about the client, which
-    a cached handler may have handed to consumers that outlive it. Callers must read the
-    refcount at the call site, since binding the client to a parameter would inflate it.
-    """
-    return owns_client and client_refcount <= _CLIENT_REFCOUNT_WHEN_HANDLER_IS_SOLE_REFERRER
-
-
-def _drop_streaming_anchor(_handler: object) -> None:
-    """Release a handler anchored to a streaming response. See ``_anchor_handler_to``.
-
-    The work is the reference held until this point, so there is nothing to do here.
-    """
-
-
-def _anchor_handler_to(response: httpx.Response, handler: object) -> None:
-    """Keep the handler alive for as long as a streaming response can still read.
-
-    A body still arriving reads through the handler's connection pool, and closing
-    the client tears that pool down. The refcount ``_handler_may_close_client``
-    reads cannot see that body: the reference graph runs response -> stream ->
-    connection and stops there, so a client carrying one looks exactly like an
-    unreferenced client, and the finalizer closes it mid-body.
-
-    ``weakref.finalize`` holds the handler in its own registry rather than on the
-    response, which matters twice. The handler stays out of the response's
-    reference cycle, so it is finalized by refcount once the anchor drops and can
-    still schedule an async close, instead of being finalized inside a cyclic
-    collection that reaps its aiohttp session in the same pass. And a handler
-    serving several streams collects only once every one of them is done, because
-    each anchor holds it separately.
-    """
-    weakref.finalize(response, _drop_streaming_anchor, handler)
 
 
 def blocked_cookie_jar() -> CookieJar:
@@ -829,8 +786,6 @@ class AsyncHTTPHandler:
                 content=request_content,
             )
             response: Final = await self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             response.raise_for_status()
             return response
         except (httpx.RemoteProtocolError, httpx.ConnectError):
@@ -1037,8 +992,6 @@ class AsyncHTTPHandler:
                 content=request_content,
             )
             response: Final = await self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             response.raise_for_status()
             return response
         except (httpx.RemoteProtocolError, httpx.ConnectError):
@@ -1093,86 +1046,6 @@ class AsyncHTTPHandler:
         response: Final = await client.send(req, stream=stream)
         response.raise_for_status()
         return response
-
-    # Strong references to finalizer-scheduled client-close tasks. A bare
-    # create_task() result may be garbage-collected before it runs, leaving
-    # the underlying aiohttp session unclosed ("Unclosed client session").
-    # Mirrors LiteLLMAiohttpTransport._background_close_tasks.
-    _finalizer_close_tasks: ClassVar[set["asyncio.Task[None]"]] = set()  # mutable-ok: strong refs for pending closes
-
-    @classmethod
-    def _on_finalizer_close_done(cls, task: "asyncio.Task[None]") -> None:
-        cls._finalizer_close_tasks.discard(task)
-        if task.cancelled():
-            return
-        exc: Final = task.exception()
-        if exc is not None:
-            verbose_logger.debug("Error closing client at finalization: %s", exc)
-
-    def _aiohttp_session_bound_elsewhere(self, loop: asyncio.AbstractEventLoop) -> bool:
-        """True when the wrapped aiohttp session is bound to a loop other than
-        ``loop`` — awaiting ``aclose()`` here would touch that loop's internals."""
-        from litellm.llms.custom_httpx.aiohttp_transport import (
-            LiteLLMAiohttpTransport,
-        )
-
-        transport: Final = getattr(self._client, "_transport", None)
-        if not isinstance(transport, LiteLLMAiohttpTransport):
-            return False
-        session: Final = transport.client
-        if not isinstance(session, ClientSession) or session.closed:
-            return False
-        return getattr(session, "_loop", None) is not loop
-
-    def _dispose_wrapped_aiohttp_session(self) -> None:
-        """Dispose the wrapped aiohttp session when ``aclose()`` cannot run here.
-
-        Finalization either has no running loop, or a loop the session is not
-        bound to. Delegating to the transport's lifecycle-aware disposal picks
-        the safe path per session state (async close on its own loop, threadsafe
-        handoff to a loop running elsewhere, or the synchronous connector
-        teardown that flips the flags ``ClientSession.__del__`` checks), so no
-        "Unclosed client session" / "Unclosed connector" warnings fire at
-        garbage collection.
-        """
-        from litellm.llms.custom_httpx.aiohttp_transport import (
-            LiteLLMAiohttpTransport,
-        )
-
-        transport: Final = getattr(self._client, "_transport", None)
-        if not isinstance(transport, LiteLLMAiohttpTransport):
-            return
-        # A shared session (e.g. the proxy's) is never this handler's to close.
-        if not getattr(transport, "_owns_session", False):
-            return
-        session: Final = transport.client
-        if isinstance(session, ClientSession) and not session.closed:
-            transport._close_recycled_session(session)  # pyright: ignore[reportPrivateUsage]  # deliberate reuse of the transport's lifecycle-aware disposal; an async close can never run in this context
-
-    def __del__(self) -> None:
-        try:
-            if not _handler_may_close_client(sys.getrefcount(self._client), self._owns_client):
-                return
-            try:
-                loop: Final = asyncio.get_running_loop()
-            except RuntimeError:
-                # No running loop at finalization time (worker threads after
-                # their loop closed, interpreter/worker shutdown, GC in a
-                # sync context). An async close can never run here.
-                self._dispose_wrapped_aiohttp_session()
-                return
-            if self._aiohttp_session_bound_elsewhere(loop):
-                # GC ran on a live loop (e.g. the app's) but the session
-                # belongs to another, possibly dead, loop — awaiting aclose()
-                # here is the cross-loop path the transport refuses.
-                self._dispose_wrapped_aiohttp_session()
-                return
-            task: Final = loop.create_task(self._client.aclose())
-            cls: Final = type(self)
-            cls._finalizer_close_tasks.add(task)
-            task.add_done_callback(cls._on_finalizer_close_done)
-        except Exception:
-            pass
 
     @staticmethod
     def _create_async_transport(
@@ -1509,8 +1382,6 @@ class HTTPHandler:
                     content=request_content,
                 )
             response: Final = self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             response.raise_for_status()
             return response
         except httpx.TimeoutException:
@@ -1561,8 +1432,6 @@ class HTTPHandler:
                     content=request_content,
                 )
             response: Final = self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             response.raise_for_status()
             return response
         except httpx.TimeoutException:
@@ -1613,8 +1482,6 @@ class HTTPHandler:
                     content=request_content,
                 )
             response: Final = self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             return response
         except httpx.TimeoutException:
             raise litellm.Timeout(
@@ -1664,8 +1531,6 @@ class HTTPHandler:
                     content=request_content,
                 )
             response: Final = self.client.send(req, stream=stream)
-            if stream:
-                _anchor_handler_to(response, self)
             response.raise_for_status()
             return response
         except httpx.TimeoutException:
@@ -1678,13 +1543,6 @@ class HTTPHandler:
             _raise_masked_sync_error(e, stream)
         except Exception as e:
             raise e
-
-    def __del__(self) -> None:
-        try:
-            if _handler_may_close_client(sys.getrefcount(self._client), self._owns_client):
-                self._client.close()
-        except Exception:
-            pass
 
     def _create_sync_transport(self) -> HTTPTransport | None:
         """
