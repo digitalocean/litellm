@@ -30,10 +30,11 @@ from openai.types.responses.response_create_params import ResponseInputParam
 from openai.types.responses.tool_choice_custom_param import ToolChoiceCustomParam
 from openai.types.responses.tool_choice_function_param import ToolChoiceFunctionParam
 from openai.types.responses.tool_param import FunctionToolParam
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from typing_extensions import ReadOnly, TypedDict
 
 from litellm._logging import verbose_logger
+from litellm.utils import convert_to_dict
 from litellm.caching import InMemoryCache
 from litellm.constants import REDACTED_BY_LITELLM, REDACTED_TOOL_CALL_ARGUMENTS_PLACEHOLDER
 from litellm.litellm_core_utils.get_supported_openai_params import (
@@ -623,7 +624,11 @@ class LiteLLMCompletionResponsesConfig:
             messages.append(ChatCompletionUserMessage(role="user", content=input))
         elif isinstance(input, list):
             existing_tool_call_ids: Final[set[str]] = set()
-            for _input in input:
+            normalized_input = [
+                convert_to_dict(item) if isinstance(item, (BaseModel, dict)) else item
+                for item in input
+            ]
+            for _input in normalized_input:
                 chat_completion_messages = (
                     LiteLLMCompletionResponsesConfig._transform_responses_api_input_item_to_chat_completion_message(
                         input_item=_input,
@@ -1350,14 +1355,6 @@ class LiteLLMCompletionResponsesConfig:
         - ResponseReasoningItemParam
         - ItemReference
         """
-        if input_item.get("type") == "web_search_call":
-            search: Final = ResponseFunctionWebSearch.model_validate(input_item)
-            return [  # mutable-ok: input conversion returns chat message lists
-                GenericChatCompletionMessage(
-                    role="assistant",
-                    content="Hosted web search: " + search.model_dump_json(exclude_none=True),
-                )
-            ]
         if LiteLLMCompletionResponsesConfig._is_input_item_tool_call_output(input_item):
             # handle executed tool call results
             return (
@@ -1537,25 +1534,31 @@ class LiteLLMCompletionResponsesConfig:
         return False
 
     @staticmethod
-    def _is_input_item_tool_call_output(input_item: Mapping[str, object]) -> bool:
+    def _is_input_item_tool_call_output(input_item: object) -> bool:
         """
         Check if the input item is a tool call output
         """
-        return input_item.get("type") in [
+        item_type = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+            input_item, "type"
+        )
+        return item_type in [
             "function_call_output",
             "custom_tool_call_output",
             "computer_call_output",
             "tool_result",  # Anthropic/MCP format
+            "web_search_call",
         ]
 
     @staticmethod
-    def _is_input_item_function_call(input_item: Mapping[str, object]) -> bool:
+    def _is_input_item_function_call(input_item: object) -> bool:
         """
         Check if the input item is a function call or custom tool call.
         Both need to be reconstructed as assistant tool_calls for Chat
         Completions providers.
         """
-        return input_item.get("type") in ("function_call", "custom_tool_call")
+        return LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+            input_item, "type"
+        ) in ("function_call", "custom_tool_call")
 
     @staticmethod
     def _transform_responses_api_tool_call_output_to_chat_completion_message(
@@ -2049,8 +2052,15 @@ class LiteLLMCompletionResponsesConfig:
 
     @staticmethod
     def responses_tools_to_chat_forms(tools: ResponseTools) -> tuple[ResponsesToolChatForm, ...]:
-        LiteLLMCompletionResponsesConfig._validate_namespace_name_collisions(tools)
-        return tuple(LiteLLMCompletionResponsesConfig._responses_tool_to_chat_form(tool) for tool in tools or ())
+        normalized_tools = [
+            convert_to_dict(tool) if isinstance(tool, (BaseModel, dict)) else tool
+            for tool in tools or ()
+        ]
+        LiteLLMCompletionResponsesConfig._validate_namespace_name_collisions(normalized_tools)
+        return tuple(
+            LiteLLMCompletionResponsesConfig._responses_tool_to_chat_form(tool)
+            for tool in normalized_tools
+        )
 
     @staticmethod
     def transform_responses_api_tools_to_chat_completion_tools(
