@@ -63,19 +63,36 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
     def translate_responses_api_usage_to_anthropic_usage(
         raw_usage: ResponseAPIUsage | None,
     ) -> AnthropicUsage:
-        """Map Responses API usage onto Anthropic usage, where ``input_tokens``
-        excludes the cache-read and cache-write tokens reported alongside it.
+        """Map Responses API usage onto Anthropic usage with cache token fields.
+
+        Prefer Anthropic-style extras on ResponseAPIUsage; fall back to OpenAI
+        ``input_tokens_details.cached_tokens`` for cache reads.
         """
         if raw_usage is None:
             return AnthropicUsage(input_tokens=0, output_tokens=0)
 
-        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
-            LiteLLMAnthropicMessagesAdapter,
+        input_tokens = int(getattr(raw_usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(raw_usage, "output_tokens", 0) or 0)
+        cache_creation_input_tokens = int(
+            getattr(raw_usage, "cache_creation_input_tokens", 0) or 0
         )
-        from litellm.responses.utils import ResponseAPILoggingUtils
+        cache_read_input_tokens = int(getattr(raw_usage, "cache_read_input_tokens", 0) or 0)
+        if not cache_read_input_tokens:
+            input_tokens_details = getattr(raw_usage, "input_tokens_details", None)
+            if input_tokens_details is not None:
+                cache_read_input_tokens = int(
+                    getattr(input_tokens_details, "cached_tokens", 0) or 0
+                )
 
-        chat_usage = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(raw_usage)
-        return LiteLLMAnthropicMessagesAdapter._translate_openai_usage_to_anthropic_usage(chat_usage)
+        anthropic_usage = AnthropicUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        if cache_creation_input_tokens:
+            anthropic_usage["cache_creation_input_tokens"] = cache_creation_input_tokens
+        if cache_read_input_tokens:
+            anthropic_usage["cache_read_input_tokens"] = cache_read_input_tokens
+        return anthropic_usage
 
     # ------------------------------------------------------------------ #
     # Request translation: Anthropic -> Responses API                     #

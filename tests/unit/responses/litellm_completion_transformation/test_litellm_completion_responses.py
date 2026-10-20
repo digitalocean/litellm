@@ -5239,3 +5239,58 @@ class TestTypedResponsesInputItems:
         assert result_tools == []
         assert web_search_options is not None
         assert web_search_options.get("search_context_size") == "medium"
+
+
+def test_preserve_cache_creation_fields_in_responses_usage_transform():
+    """DO #55: Anthropic cache fields survive chat -> responses usage transform."""
+    from litellm.types.utils import (
+        CacheCreationTokenDetails,
+        Choices,
+        Message,
+        ModelResponse,
+        PromptTokensDetailsWrapper,
+        Usage,
+    )
+
+    usage = Usage(
+        prompt_tokens=1936,
+        completion_tokens=246,
+        total_tokens=2182,
+        cache_creation_input_tokens=1900,
+        cache_read_input_tokens=512,
+        prompt_tokens_details=PromptTokensDetailsWrapper(
+            cached_tokens=0,
+            cache_creation_token_details=CacheCreationTokenDetails(
+                ephemeral_5m_input_tokens=1900,
+                ephemeral_1h_input_tokens=0,
+            ),
+        ),
+    )
+    chat_completion_response = ModelResponse(
+        id="test-response-id",
+        created=1234567890,
+        model="anthropic-claude-4.6-sonnet",
+        object="chat.completion",
+        usage=usage,
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=Message(content="Key terms are...", role="assistant"),
+            )
+        ],
+    )
+
+    response_usage = (
+        LiteLLMCompletionResponsesConfig._transform_chat_completion_usage_to_responses_usage(
+            chat_completion_response=chat_completion_response
+        )
+    )
+
+    assert getattr(response_usage, "cache_creation_input_tokens", None) == 1900
+    assert getattr(response_usage, "cache_read_input_tokens", None) == 512
+    assert getattr(response_usage, "cache_creation", None) == {
+        "ephemeral_5m_input_tokens": 1900,
+        "ephemeral_1h_input_tokens": 0,
+    }
+

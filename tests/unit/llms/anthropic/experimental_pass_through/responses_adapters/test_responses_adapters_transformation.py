@@ -2195,3 +2195,52 @@ class TestPromptCacheBreakpointToResponses:
             extra_kwargs={"prompt_cache_options": {"mode": "explicit"}},
         )
         assert kwargs["prompt_cache_options"] == {"mode": "explicit"}
+
+
+class TestTranslateResponseCacheTokensDO55:
+    """DO #55 / 86a21859f5: cache extras map onto AnthropicUsage."""
+
+    def test_should_populate_cache_creation_input_tokens(self):
+        response = _make_mock_response(output=[_make_output_message(["OK"])])
+        response.usage.cache_creation_input_tokens = 1900
+        response.usage.cache_read_input_tokens = 0
+        response.usage.input_tokens_details = None
+
+        result = _ADAPTER.translate_response(response)
+        assert result["usage"]["cache_creation_input_tokens"] == 1900
+        assert "cache_read_input_tokens" not in result["usage"]
+
+    def test_should_populate_cache_read_input_tokens(self):
+        response = _make_mock_response(output=[_make_output_message(["OK"])])
+        response.usage.cache_creation_input_tokens = 0
+        response.usage.cache_read_input_tokens = 1900
+        response.usage.input_tokens_details = None
+
+        result = _ADAPTER.translate_response(response)
+        assert result["usage"]["cache_read_input_tokens"] == 1900
+        assert "cache_creation_input_tokens" not in result["usage"]
+
+    def test_should_fall_back_to_input_tokens_details_cached_tokens(self):
+        response = _make_mock_response(output=[_make_output_message(["OK"])])
+        response.usage.cache_creation_input_tokens = 0
+        response.usage.cache_read_input_tokens = 0
+        details = MagicMock()
+        details.cached_tokens = 1900
+        # Prevent pydantic path auto-attrs if shared helpers are used later.
+        details.cached_tokens_details = None
+        details.cache_write_tokens = None
+        details.cache_creation_tokens = None
+        response.usage.input_tokens_details = details
+
+        result = _ADAPTER.translate_response(response)
+        assert result["usage"]["cache_read_input_tokens"] == 1900
+
+    def test_should_not_add_cache_keys_when_no_cache_activity(self):
+        response = _make_mock_response(output=[_make_output_message(["OK"])])
+        response.usage.cache_creation_input_tokens = 0
+        response.usage.cache_read_input_tokens = 0
+        response.usage.input_tokens_details = None
+
+        result = _ADAPTER.translate_response(response)
+        assert "cache_creation_input_tokens" not in result["usage"]
+        assert "cache_read_input_tokens" not in result["usage"]
