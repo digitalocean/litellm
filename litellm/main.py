@@ -1101,20 +1101,18 @@ def responses_api_bridge_check(
     # ``reasoningSummary`` in ``extra_body``) must be bridged; Chat Completions rejects
     # those keys.
     #
-    # - gpt-5.4+: FUNCTION tools with reasoning active must be bridged. OpenAI enables
-    #   reasoning by default for these models (unset reasoning_effort means medium
-    #   server-side), and Chat Completions rejects function tools whenever reasoning is
-    #   on ("Function tools with reasoning_effort are not supported ... use
-    #   /v1/responses or set reasoning_effort to 'none'"), so only an explicit
-    #   ``"none"`` keeps the request chat-servable. Custom (grammar) tools are served
-    #   natively by Chat Completions with reasoning on, so custom-only requests stay on
-    #   chat and keep their native custom tool_call response shape.
-    # - The UNSET-effort arm only fires against endpoints known to enforce that
-    #   constraint (any api.openai.com host, or Azure OpenAI where api_base is
-    #   always set): chat-only OpenAI-compatible backends registered under the openai
-    #   provider with a custom api_base and gpt-5.4+ model names serve tools without
-    #   reasoning fine and have no /responses route, so they keep pre-existing
-    #   behavior (bridge only on an explicit reasoning_effort).
+    # - gpt-5.6+: FUNCTION tools alone must be bridged even when reasoning_effort is
+    #   unset. OpenAI applies a default effort server-side for this family, so Chat
+    #   Completions rejects function tools outright (BerriAI/litellm#33221 / DO #54).
+    # - gpt-5.4/5.5: FUNCTION tools with an explicit non-none reasoning_effort must be
+    #   bridged. Tools-only (unset effort) stays on Chat Completions.
+    # - Custom (grammar) tools are served natively by Chat Completions with reasoning
+    #   on, so custom-only requests stay on chat and keep their native custom
+    #   tool_call response shape.
+    # - The UNSET-effort arm for gpt-5.6+ only fires against endpoints known to enforce
+    #   that constraint (any api.openai.com host, or Azure OpenAI where api_base is
+    #   always set): chat-only OpenAI-compatible backends with a custom api_base keep
+    #   pre-existing behavior (bridge only on an explicit reasoning_effort).
     # - Azure AI Foundry's OpenAI v1 hosts (azure_ai provider) enforce it later in the series:
     #   an explicit effort with function tools is rejected from gpt-5.6 on, and the unset
     #   effort only from gpt-6 on (gpt-5.6 serves tools with reasoning silently off), so the
@@ -1153,8 +1151,15 @@ def responses_api_bridge_check(
             foundry_chat_rejects_function_tools_while_reasoning(model, reasoning_effort)
             if on_foundry_openai_endpoint
             else (
-                OpenAIGPT5Config.is_model_gpt_5_4_plus_model(model)
-                and (reasoning_effort is not None or on_constraint_enforcing_endpoint)
+                (
+                    # gpt-5.6+: tools alone (unset effort) still rejected on OpenAI/Azure.
+                    OpenAIGPT5Config.is_model_gpt_5_6_plus_model(model)
+                    and (reasoning_effort is not None or on_constraint_enforcing_endpoint)
+                )
+                or (
+                    # gpt-5.4/5.5: only bridge when the caller set a non-none effort.
+                    OpenAIGPT5Config.is_model_gpt_5_4_plus_model(model) and reasoning_effort is not None
+                )
             )
         )
     )
