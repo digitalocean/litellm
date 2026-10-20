@@ -8229,8 +8229,6 @@ def normalize_message_content(content: Any) -> Any:
     return content
 
 
-def validate_and_fix_openai_messages(messages: List):
-
 def validate_and_fix_openai_messages(messages: list):
     """
     Ensures all messages are valid OpenAI chat completion messages.
