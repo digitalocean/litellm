@@ -65,11 +65,19 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
     ) -> AnthropicUsage:
         """Map Responses API usage onto Anthropic usage with cache token fields.
 
-        Prefer Anthropic-style extras on ResponseAPIUsage; fall back to OpenAI
-        ``input_tokens_details.cached_tokens`` for cache reads.
+        Prefer Anthropic-style extras on ResponseAPIUsage. Fall back to OpenAI
+        ``input_tokens_details.cached_tokens`` / ``cache_write_tokens`` (and the
+        LiteLLM ``cache_creation_tokens`` alias). Always emit Anthropic cache
+        counters, and preserve OpenAI native cached_tokens / cache_write_tokens
+        when details are present for downstream billing proxies.
         """
         if raw_usage is None:
-            return AnthropicUsage(input_tokens=0, output_tokens=0)
+            return AnthropicUsage(
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            )
 
         input_tokens = int(getattr(raw_usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(raw_usage, "output_tokens", 0) or 0)
@@ -77,21 +85,30 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
             getattr(raw_usage, "cache_creation_input_tokens", 0) or 0
         )
         cache_read_input_tokens = int(getattr(raw_usage, "cache_read_input_tokens", 0) or 0)
-        if not cache_read_input_tokens:
-            input_tokens_details = getattr(raw_usage, "input_tokens_details", None)
-            if input_tokens_details is not None:
-                cache_read_input_tokens = int(
-                    getattr(input_tokens_details, "cached_tokens", 0) or 0
-                )
+        details = getattr(raw_usage, "input_tokens_details", None)
+        cached_tokens = 0
+        cache_write_tokens = 0
+        if details is not None:
+            cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+            cache_write_tokens = int(
+                getattr(details, "cache_write_tokens", 0)
+                or getattr(details, "cache_creation_tokens", 0)
+                or 0
+            )
+            if not cache_read_input_tokens:
+                cache_read_input_tokens = cached_tokens
+            if not cache_creation_input_tokens:
+                cache_creation_input_tokens = cache_write_tokens
 
         anthropic_usage = AnthropicUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
         )
-        if cache_creation_input_tokens:
-            anthropic_usage["cache_creation_input_tokens"] = cache_creation_input_tokens
-        if cache_read_input_tokens:
-            anthropic_usage["cache_read_input_tokens"] = cache_read_input_tokens
+        if details is not None:
+            anthropic_usage["cached_tokens"] = cached_tokens
+            anthropic_usage["cache_write_tokens"] = cache_write_tokens
         return anthropic_usage
 
     # ------------------------------------------------------------------ #

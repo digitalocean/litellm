@@ -1261,19 +1261,28 @@ def _make_mock_response(
     model: str = "gpt-4o",
     input_tokens: int = 100,
     output_tokens: int = 50,
-    cached_tokens: int = 0,
-    cache_write_tokens: int = 0,
+    cached_tokens: int | None = 0,
+    cache_write_tokens: int | None = 0,
+    cache_read_input_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
+    include_input_tokens_details: bool = True,
 ) -> MagicMock:
     """Build a minimal mock ResponsesAPIResponse."""
-    usage = ResponseAPIUsage(
-        input_tokens=input_tokens,
-        input_tokens_details={
-            "cached_tokens": cached_tokens,
-            "cache_write_tokens": cache_write_tokens,
-        },
-        output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
-    )
+    usage_kwargs: dict[str, object] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+    if include_input_tokens_details:
+        usage_kwargs["input_tokens_details"] = {
+            "cached_tokens": cached_tokens or 0,
+            "cache_write_tokens": cache_write_tokens or 0,
+        }
+    usage = ResponseAPIUsage(**usage_kwargs)
+    if cache_read_input_tokens is not None:
+        setattr(usage, "cache_read_input_tokens", cache_read_input_tokens)
+    if cache_creation_input_tokens is not None:
+        setattr(usage, "cache_creation_input_tokens", cache_creation_input_tokens)
 
     resp = MagicMock()
     resp.id = response_id
@@ -2201,24 +2210,28 @@ class TestTranslateResponseCacheTokensDO55:
     """DO #55 / 86a21859f5: cache extras map onto AnthropicUsage."""
 
     def test_should_populate_cache_creation_input_tokens(self):
-        response = _make_mock_response(output=[_make_output_message(["OK"])])
-        response.usage.cache_creation_input_tokens = 1900
-        response.usage.cache_read_input_tokens = 0
-        response.usage.input_tokens_details = None
+        response = _make_mock_response(
+            output=[_make_output_message(["OK"])],
+            include_input_tokens_details=False,
+            cache_creation_input_tokens=1900,
+            cache_read_input_tokens=0,
+        )
 
         result = _ADAPTER.translate_response(response)
         assert result["usage"]["cache_creation_input_tokens"] == 1900
-        assert "cache_read_input_tokens" not in result["usage"]
+        assert result["usage"]["cache_read_input_tokens"] == 0
 
     def test_should_populate_cache_read_input_tokens(self):
-        response = _make_mock_response(output=[_make_output_message(["OK"])])
-        response.usage.cache_creation_input_tokens = 0
-        response.usage.cache_read_input_tokens = 1900
-        response.usage.input_tokens_details = None
+        response = _make_mock_response(
+            output=[_make_output_message(["OK"])],
+            include_input_tokens_details=False,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=1900,
+        )
 
         result = _ADAPTER.translate_response(response)
         assert result["usage"]["cache_read_input_tokens"] == 1900
-        assert "cache_creation_input_tokens" not in result["usage"]
+        assert result["usage"]["cache_creation_input_tokens"] == 0
 
     def test_should_fall_back_to_input_tokens_details_cached_tokens(self):
         response = _make_mock_response(output=[_make_output_message(["OK"])])
@@ -2236,11 +2249,45 @@ class TestTranslateResponseCacheTokensDO55:
         assert result["usage"]["cache_read_input_tokens"] == 1900
 
     def test_should_not_add_cache_keys_when_no_cache_activity(self):
-        response = _make_mock_response(output=[_make_output_message(["OK"])])
+        response = _make_mock_response(
+            output=[_make_output_message(["OK"])],
+            include_input_tokens_details=False,
+        )
         response.usage.cache_creation_input_tokens = 0
         response.usage.cache_read_input_tokens = 0
-        response.usage.input_tokens_details = None
 
         result = _ADAPTER.translate_response(response)
-        assert "cache_creation_input_tokens" not in result["usage"]
-        assert "cache_read_input_tokens" not in result["usage"]
+        assert result["usage"]["cache_creation_input_tokens"] == 0
+        assert result["usage"]["cache_read_input_tokens"] == 0
+        assert "cached_tokens" not in result["usage"]
+        assert "cache_write_tokens" not in result["usage"]
+
+
+class TestTranslateResponseCacheTokensDO57:
+    """DO #57: OpenAI cached_tokens / cache_write_tokens on /v1/messages."""
+
+    def test_openai_cache_tokens_mapped_on_messages(self):
+        response = _make_mock_response(
+            output=[_make_output_message(["OK"])],
+            cached_tokens=1664,
+            cache_write_tokens=1969,
+        )
+        result = _ADAPTER.translate_response(response)
+        assert result["usage"]["cache_read_input_tokens"] == 1664
+        assert result["usage"]["cached_tokens"] == 1664
+        assert result["usage"]["cache_creation_input_tokens"] == 1969
+        assert result["usage"]["cache_write_tokens"] == 1969
+
+    def test_prefers_direct_cache_fields_over_details(self):
+        response = _make_mock_response(
+            output=[_make_output_message(["OK"])],
+            cached_tokens=1664,
+            cache_write_tokens=1969,
+            cache_read_input_tokens=900,
+            cache_creation_input_tokens=700,
+        )
+        result = _ADAPTER.translate_response(response)
+        assert result["usage"]["cache_read_input_tokens"] == 900
+        assert result["usage"]["cache_creation_input_tokens"] == 700
+        assert result["usage"]["cached_tokens"] == 1664
+        assert result["usage"]["cache_write_tokens"] == 1969
