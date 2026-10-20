@@ -3,7 +3,18 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final, NoReturn, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Final,
+    List,
+    NoReturn,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import httpx
 from pydantic import BaseModel, ValidationError
