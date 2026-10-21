@@ -11,7 +11,12 @@ from datetime import datetime
 from functools import reduce
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, TypeVar, cast
 
-from redis.exceptions import RedisError
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+
+    class RedisError(Exception):
+        pass
 
 from litellm._logging import verbose_proxy_logger
 from litellm.caching import RedisCache
