@@ -217,16 +217,19 @@ fn drop_unsupported_params(
 ) -> Result<AnthropicMessagesRequest, Error> {
     let capabilities = &context.thinking.capabilities;
     let model = request.model.clone();
-    let reject = |param: &str, value: String, hint: &str| -> Result<(), Error> {
+    let reject_optional = |param: &str, value: String, hint: &str| -> Result<(), Error> {
         if context.drop_params {
             return Ok(());
         }
         Err(unsupported_param(&model, param, &value, hint))
     };
+    let reject_sampling = |param: &str, value: String, hint: &str| -> Result<(), Error> {
+        Err(unsupported_param(&model, param, &value, hint))
+    };
     let params = request.params;
     let speed = match &params.speed {
         Some(speed) if !capabilities.supports_speed => {
-            reject("speed", format!("'{}'", speed_text(speed)), "")?;
+            reject_optional("speed", format!("'{}'", speed_text(speed)), "")?;
             None
         }
         _ => params.speed.clone(),
@@ -239,7 +242,7 @@ fn drop_unsupported_params(
     }
     let temperature = match params.temperature {
         Some(temperature) if temperature != 1.0 => {
-            reject(
+            reject_sampling(
                 "temperature",
                 json!(temperature).to_string(),
                 "Only temperature=1 is supported. ",
@@ -249,10 +252,10 @@ fn drop_unsupported_params(
         temperature => temperature,
     };
     if let Some(top_p) = params.top_p {
-        reject("top_p", json!(top_p).to_string(), "")?;
+        reject_sampling("top_p", json!(top_p).to_string(), "")?;
     }
     if let Some(top_k) = params.top_k {
-        reject("top_k", json!(top_k).to_string(), "")?;
+        reject_sampling("top_k", json!(top_k).to_string(), "")?;
     }
     Ok(AnthropicMessagesRequest {
         params: AnthropicMessagesOptionalParams {
@@ -500,14 +503,6 @@ mod tests {
     }
 
     #[rstest]
-    #[case::temperature(sampling_removed(), json!({"temperature": 0.3}), json!({}))]
-    #[case::top_p(sampling_removed(), json!({"top_p": 0.9}), json!({}))]
-    #[case::top_k(sampling_removed(), json!({"top_k": 40}), json!({}))]
-    #[case::every_sampling_param_keeping_the_rest(
-        sampling_removed(),
-        json!({"temperature": 0.3, "top_p": 0.9, "top_k": 40, "stream": true}),
-        json!({"stream": true})
-    )]
     #[case::speed_on_a_sampling_model(
         unmapped(),
         json!({"speed": "fast", "temperature": 0.5}),
@@ -518,12 +513,28 @@ mod tests {
         json!({"speed": "fast", "temperature": 1.0}),
         json!({"temperature": 1.0})
     )]
-    fn removed_params_are_dropped_under_drop_params(
+    fn removed_non_sampling_params_are_dropped_under_drop_params(
         #[case] capabilities: AnthropicModelCapabilities,
         #[case] fields: Value,
         #[case] expected: Value,
     ) {
         assert_eq!(transform(fields, capabilities, true), Ok(body(expected)));
+    }
+
+    #[rstest]
+    #[case::temperature(sampling_removed(), json!({"temperature": 0.3}), "temperature=0.3")]
+    #[case::top_p(sampling_removed(), json!({"top_p": 0.9}), "top_p=0.9")]
+    #[case::top_k(sampling_removed(), json!({"top_k": 40}), "top_k=40")]
+    fn removed_sampling_params_raise_even_under_drop_params(
+        #[case] capabilities: AnthropicModelCapabilities,
+        #[case] fields: Value,
+        #[case] needle: &str,
+    ) {
+        let err = transform(fields, capabilities, true).expect_err("sampling must 400");
+        assert!(
+            err.to_string().contains(needle),
+            "error {err:?} should mention {needle}"
+        );
     }
 
     #[rstest]

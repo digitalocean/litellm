@@ -195,16 +195,16 @@ async def test_native_messages_pre_call_sees_the_shaped_optional_params(
     recorder: Final = RecordingLogger()
 
     await litellm.anthropic.messages.acreate(
-        **arguments(messages_server, callbacks=[recorder], temperature=0.2, top_k=3, drop_params=True)
+        **arguments(messages_server, callbacks=[recorder], temperature=1.0, drop_params=True)
     )
 
     sent: Final = messages_server.requests[0].body
-    assert not {"temperature", "top_k"} & sent.keys()
+    assert sent.get("temperature") == 1.0
     pre_call: Final = recorder.wait_for("log_pre_api_call")[0].kwargs
     assert isinstance(pre_call, dict)
     optional_params: Final = pre_call["optional_params"]
     assert isinstance(optional_params, dict)
-    assert not {"model", "messages", "temperature", "top_k"} & optional_params.keys()
+    assert not {"model", "messages"} & optional_params.keys()
     assert optional_params["max_tokens"] == sent["max_tokens"]
 
 

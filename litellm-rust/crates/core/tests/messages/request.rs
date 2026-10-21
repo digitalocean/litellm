@@ -366,7 +366,6 @@ fn sampling_removed() -> AnthropicModelCapabilities {
 }
 
 #[rstest]
-#[case::sampling_params(sampling_removed(), json!({"temperature": 0.2, "top_p": 0.9, "top_k": 5}), &["temperature", "top_p", "top_k"], "temperature=0.2")]
 #[case::speed(AnthropicModelCapabilities::default(), json!({"speed": "fast"}), &["speed"], "speed='fast'")]
 #[tokio::test]
 async fn unsupported_params_are_dropped_under_drop_params_and_rejected_without_it(
@@ -413,6 +412,53 @@ async fn unsupported_params_are_dropped_under_drop_params_and_rejected_without_i
         assert_eq!(sent.get(*name), None, "{name} must be dropped");
     }
     assert_eq!(sent["max_tokens"], 16);
+}
+
+#[rstest]
+#[case::sampling_params(
+    sampling_removed(),
+    json!({"temperature": 0.2, "top_p": 0.9, "top_k": 5}),
+    "temperature=0.2"
+)]
+#[tokio::test]
+async fn unsupported_sampling_params_are_rejected_even_under_drop_params(
+    call: MessagesCall,
+    #[case] capabilities: AnthropicModelCapabilities,
+    #[case] fields: Value,
+    #[case] rejected_as: &str,
+) {
+    let upstream = upstream([message_response()]).await;
+    let shaped = |drop_params: bool| {
+        with_fields(
+            MessagesCall {
+                api_key: Some("sk".into()),
+                api_base: Some(upstream.uri()),
+                shaping: MessagesShaping {
+                    capabilities,
+                    drop_params,
+                    ..MessagesShaping::default()
+                },
+                body: call.body.clone(),
+                custom_llm_provider: call.custom_llm_provider.clone(),
+                extra_headers: None,
+                provider_specific_header: None,
+                timeout: call.timeout,
+            },
+            fields.clone(),
+        )
+    };
+
+    for drop_params in [false, true] {
+        let error = run(shaped(drop_params))
+            .await
+            .err()
+            .expect("unsupported sampling must 400");
+        assert!(
+            matches!(&error, Error::InvalidRequest(message) if message.contains(rejected_as)),
+            "drop_params={drop_params}: {error:?}"
+        );
+    }
+    assert!(received(&upstream).await.is_empty());
 }
 
 #[rstest]

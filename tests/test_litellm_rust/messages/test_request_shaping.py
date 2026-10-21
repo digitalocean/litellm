@@ -89,13 +89,15 @@ async def test_claude_code_adaptive_payload_is_downgraded_to_a_capped_budget_for
 
 
 @pytest.mark.asyncio
-async def test_removed_sampling_params_are_dropped_under_drop_params(messages_server: RecordingServer) -> None:
-    await litellm.anthropic.messages.acreate(
-        **arguments(messages_server, temperature=0.2, top_p=0.9, top_k=5, drop_params=True)
-    )
+async def test_removed_sampling_params_are_rejected_under_drop_params(messages_server: RecordingServer) -> None:
+    messages_server.expected_requests = 0
 
-    body, _ = sent(messages_server)
-    assert not {"temperature", "top_p", "top_k"} & body.keys()
+    with pytest.raises(litellm.BadRequestError, match="does not support"):
+        await litellm.anthropic.messages.acreate(
+            **arguments(messages_server, temperature=0.2, top_p=0.9, top_k=5, drop_params=True)
+        )
+
+    assert messages_server.requests == []
 
 
 @pytest.mark.asyncio

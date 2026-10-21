@@ -92,29 +92,24 @@ def test_drop_params_keeps_speed_for_supporting_model():
     assert result == {"speed": "fast"}
 
 
-def test_drop_params_strips_sampling_params_for_unsupported_model(monkeypatch):
-    # claude-opus-4-7 has supports_sampling_params: false in the model map; the
-    # API 400s on these rather than ignoring them.
+def test_sampling_params_raise_for_unsupported_model_even_with_drop_params(monkeypatch):
     monkeypatch.setattr(litellm, "drop_params", False)
-    result = AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
-        params={"temperature": 0.3, "top_p": 0.9, "top_k": 40, "stream": True},
-        model="claude-opus-4-7",
-        drop_params=True,
-    )
+    with pytest.raises(litellm.utils.UnsupportedParamsError, match="does not support temperature"):
+        AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
+            params={"temperature": 0.3, "top_p": 0.9, "top_k": 40, "stream": True},
+            model="claude-opus-4-7",
+            drop_params=True,
+        )
 
-    assert result == {"stream": True}
 
-
-def test_drop_params_strips_sampling_params_for_provider_prefixed_model(monkeypatch):
-    # Vertex-routed ids must resolve the same capability flag.
+def test_sampling_params_raise_for_provider_prefixed_unsupported_model(monkeypatch):
     monkeypatch.setattr(litellm, "drop_params", False)
-    result = AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
-        params={"temperature": 0.3, "top_p": 0.9, "top_k": 40},
-        model="vertex_ai/claude-opus-4-7",
-        drop_params=True,
-    )
-
-    assert result == {}
+    with pytest.raises(litellm.utils.UnsupportedParamsError, match="does not support temperature"):
+        AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
+            params={"temperature": 0.3, "top_p": 0.9, "top_k": 40},
+            model="vertex_ai/claude-opus-4-7",
+            drop_params=True,
+        )
 
 
 def test_sampling_params_kept_for_supporting_model(monkeypatch):
@@ -129,7 +124,6 @@ def test_sampling_params_kept_for_supporting_model(monkeypatch):
 
 
 def test_temperature_1_kept_for_unsupported_model(monkeypatch):
-    # temperature=1 is the one value these models still accept.
     monkeypatch.setattr(litellm, "drop_params", False)
     result = AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
         params={"temperature": 1},
@@ -147,4 +141,23 @@ def test_sampling_param_raises_clean_400_without_drop_params(monkeypatch):
             params={"temperature": 0.3},
             model="claude-opus-4-7",
             drop_params=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-sonnet-5",
+        "claude-sonnet-5.5",
+        "anthropic-claude-sonnet-5.5",
+        "claude-sonnet-5-5",
+    ],
+)
+def test_sonnet_5_family_rejects_top_k_even_with_drop_params(monkeypatch, model):
+    monkeypatch.setattr(litellm, "drop_params", False)
+    with pytest.raises(litellm.utils.UnsupportedParamsError, match="does not support top_k"):
+        AnthropicMessagesRequestUtils.get_requested_anthropic_messages_optional_param(
+            params={"top_k": 10},
+            model=model,
+            drop_params=True,
         )

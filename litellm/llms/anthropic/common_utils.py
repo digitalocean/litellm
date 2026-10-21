@@ -461,6 +461,8 @@ class AnthropicModelInfo(BaseLLMModelInfo):
                 "opus_4_8",
                 "opus-4.8",
                 "opus_4.8",
+                "sonnet-5",
+                "sonnet_5",
             )
         )
 
