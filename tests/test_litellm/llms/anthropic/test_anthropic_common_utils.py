@@ -1294,6 +1294,21 @@ class TestAnthropicThinkingSignatureSelfHeal:
         )
         assert is_anthropic_invalid_thinking_signature_error("thinking signature is malformed") is False
 
+    def test_is_anthropic_invalid_thinking_signature_error_excludes_prefix_binding(
+        self,
+    ):
+        from litellm.llms.anthropic.common_utils import (
+            is_anthropic_invalid_thinking_signature_error,
+        )
+
+        raw = (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"messages.1.content.0: Invalid signature in thinking block: '
+            'thinking block is bound to a different conversation"},'
+            '"request_id":"req_binding"}'
+        )
+        assert is_anthropic_invalid_thinking_signature_error(raw) is False
+
     def test_strip_thinking_blocks_from_anthropic_messages(self):
         from litellm.llms.anthropic.common_utils import (
             strip_thinking_blocks_from_anthropic_messages,
@@ -1554,6 +1569,51 @@ class TestAnthropicThinkingSignatureSelfHeal:
         config.transform_anthropic_messages_request_on_http_error(err, data)
         assert "thinking" not in data
         assert data["messages"] == []
+
+    def test_anthropic_messages_config_http_retry_skips_prefix_binding(self):
+        """Conversation/prefix-binding 400s must not strip-and-retry (parity with relay)."""
+        import copy
+
+        import httpx
+
+        from litellm.llms.anthropic.experimental_pass_through.messages.transformation import (
+            AnthropicMessagesConfig,
+        )
+
+        config = AnthropicMessagesConfig()
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        binding_text = (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"messages.1.content.0: Invalid signature in thinking block: '
+            'thinking block is bound to a different conversation"},'
+            '"request_id":"req_binding"}'
+        )
+        err = httpx.HTTPStatusError(
+            "bad",
+            request=req,
+            response=httpx.Response(400, request=req, text=binding_text),
+        )
+        assert config.should_retry_anthropic_messages_on_http_error(err, {}) is False
+
+        data = {
+            "model": "claude-sonnet-4-20250514",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "x",
+                            "signature": "y",
+                        },
+                    ],
+                }
+            ],
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+        }
+        before = copy.deepcopy(data)
+        config.transform_anthropic_messages_request_on_http_error(err, data)
+        assert data == before
 
 
 @pytest.fixture
