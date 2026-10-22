@@ -1242,10 +1242,15 @@ def is_anthropic_invalid_thinking_block_error(error_text: str) -> bool:
     messages.N.content.M.thinking.signature.str: Input should be a valid string
     messages.N.content.M: Invalid `signature` in `thinking` block
     messages.N.content.M.thinking: each thinking block must contain thinking
+
+    Prefix / conversation binding rejects also mention an invalid thinking signature but
+    must not be treated as recoverable (they include "bound to a different conversation").
     """
     if not error_text:
         return False
     lower: Final = error_text.lower()
+    if "bound to a different conversation" in lower:
+        return False
     if "thinking" not in lower:
         return False
     if "signature" in lower and ("invalid" in lower or "valid string" in lower):

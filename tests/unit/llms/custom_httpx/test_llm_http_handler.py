@@ -2491,6 +2491,81 @@ async def test_alist_input_items_surfaces_upstream_error_status():
 
 
 @pytest.mark.asyncio
+async def test_anthropic_prefix_binding_mismatch_does_not_retry():
+    """Prefix/conversation binding 400s must surface immediately (no strip-and-retry POST)."""
+    from litellm.llms.anthropic.experimental_pass_through.messages.transformation import (
+        AnthropicMessagesConfig,
+    )
+    from litellm.llms.base_llm.chat.transformation import BaseLLMException
+
+    handler = BaseLLMHTTPHandler()
+    provider_config = AnthropicMessagesConfig()
+    request_url = "https://api.anthropic.com/v1/messages"
+    request_body = {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "x", "signature": "sig"},
+                    {"type": "text", "text": "ok"},
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ],
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+    binding_text = (
+        '{"type":"error","error":{"type":"invalid_request_error",'
+        '"message":"messages.1.content.0: Invalid signature in thinking block: '
+        'thinking block is bound to a different conversation"},'
+        '"request_id":"req_binding"}'
+    )
+    posts: list = []
+
+    class FakeAsyncClient:
+        async def post(
+            self, url, headers, data, stream=False, logging_obj=None, timeout=None
+        ):
+            posts.append(data)
+            return httpx.Response(
+                400,
+                text=binding_text,
+                request=httpx.Request("POST", request_url),
+            )
+
+    logging_obj: Final = Mock(baseline_cache_context=None)
+    logging_obj.model_call_details = {}
+
+    with pytest.raises(BaseLLMException) as excinfo:
+        await handler._async_post_anthropic_messages_with_http_error_retry(
+            async_httpx_client=FakeAsyncClient(),
+            request_url=request_url,
+            headers={"Content-Type": "application/json"},
+            signed_json_body=None,
+            request_body=request_body,
+            stream=False,
+            logging_obj=logging_obj,
+            provider_config=provider_config,
+            litellm_params=GenericLiteLLMParams(),
+            api_key="k",
+            model="claude-sonnet-4-20250514",
+        )
+
+    assert excinfo.value.status_code == 400
+    assert len(posts) == 1
+    assert "thinking" in request_body
+    assert any(
+        isinstance(block, dict) and block.get("type") == "thinking"
+        for message in request_body["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_anthropic_invalid_thinking_signature_retry_resigns_bedrock_request(monkeypatch):
     """Regression: after Bedrock rejects a replayed thinking block (400 invalid signature),
     the strip-and-retry re-sign must not inherit attempt 1's SigV4 Authorization/X-Amz-Date;
