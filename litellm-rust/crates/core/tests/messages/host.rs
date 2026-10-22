@@ -5,7 +5,6 @@ use litellm_host::{
     event::{CallEvent, MachineEvent, RequestContext, WireRequest},
     host::Host,
 };
-use litellm_llms::anthropic::common_utils::AnthropicModelCapabilities;
 use rstest::rstest;
 
 use super::*;
@@ -173,7 +172,8 @@ async fn no_raw_response_is_emitted_for_a_stream_or_a_failure(
 }
 
 /// Python logs `optional_params` as what it is about to send, so a dropped param must
-/// not resurface in callbacks.
+/// not resurface in callbacks. Use a non-sampling droppable field: unsupported sampling
+/// always 400s on /v1/messages even under drop_params.
 #[rstest]
 #[tokio::test]
 async fn the_request_context_carries_the_shaped_params_without_model_or_messages(
@@ -183,14 +183,10 @@ async fn the_request_context_carries_the_shaped_params_without_model_or_messages
     let host = RecordingHost::passthrough(authenticated(
         MessagesCall {
             shaping: MessagesShaping {
-                capabilities: AnthropicModelCapabilities {
-                    supports_sampling_params: false,
-                    ..AnthropicModelCapabilities::default()
-                },
                 drop_params: true,
                 ..MessagesShaping::default()
             },
-            ..with_fields(call, json!({"temperature": 0.2}))
+            ..with_fields(call, json!({"speed": "fast"}))
         },
         upstream.uri(),
     ));

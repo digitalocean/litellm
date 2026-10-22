@@ -165,7 +165,7 @@ class AnthropicMessagesRequestUtils:
                         model=model,
                         param=param,
                         value=filtered_params.pop(param),
-                        drop_params=drop_params,
+                        drop_params=False,
                         output_key=param,
                     )
         return cast(AnthropicMessagesRequestOptionalParams, filtered_params)

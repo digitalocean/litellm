@@ -21,7 +21,12 @@ from typing import Final, Literal, NamedTuple, Protocol, TypeAlias
 
 from fastapi import Request, status
 from pydantic import TypeAdapter, ValidationError
-from redis.exceptions import RedisError
+try:
+    from redis.exceptions import RedisError
+except ImportError:
+
+    class RedisError(Exception):
+        pass
 
 from litellm._logging import verbose_proxy_logger
 from litellm.caching.in_memory_cache import InMemoryCache

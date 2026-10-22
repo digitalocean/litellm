@@ -13,7 +13,6 @@ from typing import IO, Final, Protocol, TypeAlias
 from urllib.parse import quote
 
 import httpx
-import soundfile
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 from typing_extensions import ReadOnly, TypedDict
 
@@ -510,6 +509,13 @@ async def write_media_within_limit(response: httpx.Response, media_file: IO[byte
 
 
 def media_file_seconds(path: Path) -> float | None:
+    try:
+        import soundfile
+    except ImportError:
+        verbose_proxy_logger.warning(
+            "Transcribe media duration needs the optional 'soundfile' dependency; skipping measurement"
+        )
+        return None
     try:
         with soundfile.SoundFile(str(path)) as audio:
             return len(audio) / audio.samplerate
