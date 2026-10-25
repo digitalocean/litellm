@@ -570,3 +570,77 @@ def test_hosted_vllm_custom_tools_use_top_level_input_schema():
     assert tools[0]["function"]["name"] == "search"
     assert tools[0]["function"]["description"] == "Search docs"
     assert tools[0]["function"]["parameters"] == input_schema
+
+
+def test_hosted_vllm_reasoning_content_renamed_to_reasoning():
+    """reasoning_content on an inbound assistant message is renamed to reasoning
+    so vLLM Jinja chat templates (which read 'reasoning') can reconstruct CoT."""
+    config = HostedVLLMChatConfig()
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "The secret word is periwinkle.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_time", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "12:00", "tool_call_id": "call_1"},
+    ]
+    transformed = config.transform_request(
+        model="hosted_vllm/gpt-oss-120b",
+        messages=messages,
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+    assistant_msg = transformed["messages"][0]
+    assert "reasoning" in assistant_msg
+    assert assistant_msg["reasoning"] == "The secret word is periwinkle."
+    assert "reasoning_content" not in assistant_msg
+
+
+def test_hosted_vllm_reasoning_field_preserved_if_already_present():
+    """If the caller already sent 'reasoning', don't overwrite it with reasoning_content."""
+    config = HostedVLLMChatConfig()
+    messages = [
+        {
+            "role": "assistant",
+            "content": "ok",
+            "reasoning": "already correct field",
+            "reasoning_content": "should be ignored",
+        }
+    ]
+    transformed = config.transform_request(
+        model="hosted_vllm/gpt-oss-120b",
+        messages=messages,
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+    assistant_msg = transformed["messages"][0]
+    assert assistant_msg["reasoning"] == "already correct field"
+
+
+def test_hosted_vllm_non_assistant_reasoning_content_untouched():
+    """user and tool messages with reasoning_content are left alone."""
+    config = HostedVLLMChatConfig()
+    messages = [
+        {"role": "user", "content": "hi", "reasoning_content": "user-side noise"},
+        {"role": "tool", "content": "result", "tool_call_id": "x", "reasoning_content": "tool noise"},
+    ]
+    transformed = config.transform_request(
+        model="hosted_vllm/gpt-oss-120b",
+        messages=messages,
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+    assert transformed["messages"][0].get("reasoning_content") == "user-side noise"
+    assert "reasoning" not in transformed["messages"][0]
+    assert transformed["messages"][1].get("reasoning_content") == "tool noise"
+    assert "reasoning" not in transformed["messages"][1]
