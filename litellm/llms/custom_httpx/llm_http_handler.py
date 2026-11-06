@@ -7078,7 +7078,11 @@ class BaseLLMHTTPHandler:
                     files=files,
                     timeout=timeout,
                 )
-            elif video_generation_provider_config.use_multipart_form_data():
+            elif (
+                litellm_params.video_use_multipart_form_data
+                if litellm_params.video_use_multipart_form_data is not None
+                else video_generation_provider_config.use_multipart_form_data()
+            ):
                 response = sync_httpx_client.post(  # rebind-ok: one of three mutually-exclusive branches
                     url=api_base,
                     headers=headers,
@@ -7185,7 +7189,11 @@ class BaseLLMHTTPHandler:
                     files=files,
                     timeout=timeout,
                 )
-            elif video_generation_provider_config.use_multipart_form_data():
+            elif (
+                litellm_params.video_use_multipart_form_data
+                if litellm_params.video_use_multipart_form_data is not None
+                else video_generation_provider_config.use_multipart_form_data()
+            ):
                 response = await async_httpx_client.post(  # rebind-ok: one of three mutually-exclusive branches
                     url=api_base,
                     headers=headers,

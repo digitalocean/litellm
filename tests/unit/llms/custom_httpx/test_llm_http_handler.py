@@ -3220,14 +3220,18 @@ class _JSONBodyVideoConfig(OpenAIVideoConfig):
         return False
 
 
-def _video_create_call_kwargs(config, **optional_params):
+def _video_create_call_kwargs(config, video_use_multipart_form_data=None, **optional_params):
     return {
         "model": "sora-2",
         "prompt": "a cat surfing",
         "video_generation_provider_config": config,
         "video_generation_optional_request_params": {"seconds": "4", **optional_params},
         "custom_llm_provider": "openai",
-        "litellm_params": GenericLiteLLMParams(api_key="sk-test", api_base="https://video.example/v1"),
+        "litellm_params": GenericLiteLLMParams(
+            api_key="sk-test",
+            api_base="https://video.example/v1",
+            video_use_multipart_form_data=video_use_multipart_form_data,
+        ),
         "logging_obj": Mock(),
         "timeout": 10.0,
     }
@@ -3321,6 +3325,54 @@ def test_video_generation_json_provider_keeps_json_body():
 
     assert captured["content_type"] == "application/json"
     assert json.loads(captured["body"]) == {"model": "sora-2", "prompt": "a cat surfing", "seconds": "4"}
+    assert result.status == "queued"
+
+
+def test_video_generation_request_override_sends_json():
+    captured = {}
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_capture_video_create_request(captured))))
+
+    result = BaseLLMHTTPHandler().video_generation_handler(
+        client=client,
+        **_video_create_call_kwargs(OpenAIVideoConfig(), video_use_multipart_form_data=False),
+    )
+
+    assert captured["content_type"] == "application/json"
+    assert json.loads(captured["body"]) == {"model": "sora-2", "prompt": "a cat surfing", "seconds": "4"}
+    assert result.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_async_video_generation_request_override_sends_json():
+    captured = {}
+    client = AsyncHTTPHandler()
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(_capture_video_create_request(captured)))
+
+    result = await BaseLLMHTTPHandler().async_video_generation_handler(
+        client=client,
+        **_video_create_call_kwargs(OpenAIVideoConfig(), video_use_multipart_form_data=False),
+    )
+
+    assert captured["content_type"] == "application/json"
+    assert json.loads(captured["body"]) == {"model": "sora-2", "prompt": "a cat surfing", "seconds": "4"}
+    assert result.status == "queued"
+
+
+def test_video_generation_request_override_sends_multipart():
+    captured = {}
+    client = HTTPHandler(client=httpx.Client(transport=httpx.MockTransport(_capture_video_create_request(captured))))
+
+    result = BaseLLMHTTPHandler().video_generation_handler(
+        client=client,
+        **_video_create_call_kwargs(_JSONBodyVideoConfig(), video_use_multipart_form_data=True),
+    )
+
+    assert captured["content_type"].startswith("multipart/form-data")
+    assert _multipart_text_fields(captured["content_type"], captured["body"]) == {
+        "model": "sora-2",
+        "prompt": "a cat surfing",
+        "seconds": "4",
+    }
     assert result.status == "queued"
 
 
