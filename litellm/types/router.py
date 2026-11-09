@@ -422,6 +422,10 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
         default=False,
         description="Use stored xAI OAuth credentials when no xAI API key is configured.",
     )
+    video_use_multipart_form_data: bool | None = Field(
+        default=None,
+        description="Overrides the provider config's multipart/form-data default for file-less video generation bodies.",
+    )
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
     merge_reasoning_content_in_choices: bool | None = False
     model_info: dict | None = None
