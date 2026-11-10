@@ -57,6 +57,18 @@ def test_requested__strips_litellm_internal_params():
     assert result == {"seconds": "8"}
 
 
+def test_requested__strips_video_use_multipart_form_data():
+    result = get_requested(
+        {
+            "seconds": "8",
+            "prompt": "a cat surfing",
+            "video_use_multipart_form_data": False,
+        }
+    )
+    assert result == {"seconds": "8"}
+    assert "video_use_multipart_form_data" not in result
+
+
 def test_requested__timeout_always_removed():
     # timeout is NOT a litellm-internal param, so only the explicit pop removes it.
     result = get_requested({"seconds": "8", "timeout": 30})
