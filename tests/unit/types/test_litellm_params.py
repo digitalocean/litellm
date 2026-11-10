@@ -71,6 +71,7 @@ CONNECTION_NAMES: Final = (
     "client",
     "shared_session",
     "ssl_verify",
+    "video_use_multipart_form_data",
     "request_timeout",
     "force_timeout",
     "stream_timeout",
